@@ -108,17 +108,17 @@ class InContextLinearRegressionDataset(Dataset):
         D = self.cfg.D
         if self.tasks is None or self.M_int is None:
             # "infinite" task diversity: sample t ~ N(0, I_D)
-            return torch.randn(D)
+            return torch.randn(D, device=self.device)
         else:
-            idx = torch.randint(0, self.M_int, (1,))
+            idx = torch.randint(0, self.M_int, (1,), device=self.device)
             return self.tasks[idx].squeeze(0)
 
     def __getitem__(self, idx):
         D, K, sigma2 = self.cfg.D, self.cfg.K, self.cfg.sigma2
 
         t = self._sample_task()  # (D,)
-        x = torch.randn(K, D)
-        noise = torch.randn(K) * math.sqrt(sigma2)
+        x = torch.randn(K, D, device=self.device)
+        noise = torch.randn(K, device=self.device) * math.sqrt(sigma2)
         y = x @ t + noise  # (K,)
 
         tokens = encode_sequence_tokens(x, y)  # (2K, D+1)
