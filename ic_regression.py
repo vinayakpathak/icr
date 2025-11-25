@@ -20,7 +20,9 @@ class ICRegConfig:
     d_model: int = 512
     d_mlp: int = 512
     n_heads: int = 4
-    n_layers: int = 2
+    n_layers: int = 8     # number of transformer blocks (L in the paper)
+    use_prenorm: bool = True  # True for pre-layer-norm, False for post-layer-norm (GPT2 style)
+    M: Union[int, str] = 64  # task diversity: int for uniform over {t_1,...,t_M}, "inf" for Gaussian
     max_M: int = 32768    # max number of discrete tasks to pre-sample
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -87,10 +89,12 @@ class InContextLinearRegressionDataset(Dataset):
     ):
         super().__init__()
         self.cfg = cfg
-        self.tasks = tasks  # (max_M, D) or None
+        # Keep tasks on CPU for dataset (will be moved to device in training loop)
+        self.tasks = tasks.cpu() if tasks is not None else None
         self.M = M
         self.num_samples = num_samples
-        self.device = device
+        # Always use CPU in dataset - tensors will be moved to device in training loop
+        self.device = "cpu"
 
         if isinstance(M, str):
             assert M == "inf"
@@ -108,20 +112,20 @@ class InContextLinearRegressionDataset(Dataset):
         D = self.cfg.D
         if self.tasks is None or self.M_int is None:
             # "infinite" task diversity: sample t ~ N(0, I_D)
-            return torch.randn(D, device=self.device)
+            return torch.randn(D)  # Always on CPU
         else:
-            idx = torch.randint(0, self.M_int, (1,), device=self.device)
-            return self.tasks[idx].squeeze(0)
+            idx = torch.randint(0, self.M_int, (1,))
+            return self.tasks[idx].squeeze(0)  # Tasks are on CPU
 
     def __getitem__(self, idx):
         D, K, sigma2 = self.cfg.D, self.cfg.K, self.cfg.sigma2
 
-        t = self._sample_task()  # (D,)
-        x = torch.randn(K, D, device=self.device)
-        noise = torch.randn(K, device=self.device) * math.sqrt(sigma2)
-        y = x @ t + noise  # (K,)
+        t = self._sample_task()  # (D,) on CPU
+        x = torch.randn(K, D)  # Always on CPU
+        noise = torch.randn(K) * math.sqrt(sigma2)  # Always on CPU
+        y = x @ t + noise  # (K,) on CPU
 
-        tokens = encode_sequence_tokens(x, y)  # (2K, D+1)
+        tokens = encode_sequence_tokens(x, y)  # (2K, D+1) on CPU
 
         return tokens, y
 
@@ -131,8 +135,9 @@ class InContextLinearRegressionDataset(Dataset):
 # =====================
 
 class TransformerBlock(nn.Module):
-    def __init__(self, d_model: int, n_heads: int, d_mlp: int):
+    def __init__(self, d_model: int, n_heads: int, d_mlp: int, use_prenorm: bool = True):
         super().__init__()
+        self.use_prenorm = use_prenorm
         self.ln1 = nn.LayerNorm(d_model)
         self.attn = nn.MultiheadAttention(
             embed_dim=d_model,
@@ -148,14 +153,22 @@ class TransformerBlock(nn.Module):
 
     def forward(self, x: torch.Tensor, attn_mask: torch.Tensor) -> torch.Tensor:
         # x: (B, T, d_model)
-        # Pre-LN attention
-        h = self.ln1(x)
-        attn_out, _ = self.attn(h, h, h, attn_mask=attn_mask)
-        x = x + attn_out
-        # Pre-LN MLP
-        h = self.ln2(x)
-        h = self.mlp(h)
-        x = x + h
+        if self.use_prenorm:
+            # Pre-layer-norm: norm before attention/MLP
+            h = self.ln1(x)
+            attn_out, _ = self.attn(h, h, h, attn_mask=attn_mask)
+            x = x + attn_out
+            h = self.ln2(x)
+            h = self.mlp(h)
+            x = x + h
+        else:
+            # Post-layer-norm (GPT2 style): norm after residual connection
+            attn_out, _ = self.attn(x, x, x, attn_mask=attn_mask)
+            x = x + attn_out
+            x = self.ln1(x)
+            h = self.mlp(x)
+            x = x + h
+            x = self.ln2(x)
         return x
 
 
@@ -183,9 +196,9 @@ class ICLinearRegressionTransformer(nn.Module):
         # Learned positional embedding
         self.pos_emb = nn.Parameter(torch.zeros(1, self.seq_len, d_model))
 
-        # Transformer blocks
+        # Transformer blocks (L layers, each with attention + MLP)
         self.blocks = nn.ModuleList(
-            [TransformerBlock(d_model, cfg.n_heads, cfg.d_mlp)
+            [TransformerBlock(d_model, cfg.n_heads, cfg.d_mlp, cfg.use_prenorm)
              for _ in range(cfg.n_layers)]
         )
 
@@ -194,24 +207,26 @@ class ICLinearRegressionTransformer(nn.Module):
         self.output_proj = nn.Linear(d_model, self.token_dim)
 
         # Causal mask (prevent attending to future tokens)
-        # attn_mask[i, j] = True  ==> token i cannot attend to token j
-        mask = torch.triu(torch.ones(self.seq_len, self.seq_len), diagonal=1).bool()
+        # For PyTorch's MultiheadAttention: attn_mask[i, j] = True means position i cannot attend to position j
+        # We want a lower triangular mask (can attend to past and present, not future)
+        mask = torch.triu(torch.ones(self.seq_len, self.seq_len, dtype=torch.bool), diagonal=1)
         self.register_buffer("attn_mask", mask)
 
         self._init_parameters()
 
     def _init_parameters(self):
-        # Simple initialization; you can tweak if you want to match exact training dynamics
+        # Initialization matching GPT2/nanoGPT: normal(0, 0.02) for embeddings and linear layers
         nn.init.normal_(self.pos_emb, mean=0.0, std=0.02)
-        nn.init.xavier_uniform_(self.input_proj.weight)
+        nn.init.normal_(self.input_proj.weight, mean=0.0, std=0.02)
         nn.init.zeros_(self.input_proj.bias)
-        nn.init.xavier_uniform_(self.output_proj.weight)
+        nn.init.normal_(self.output_proj.weight, mean=0.0, std=0.02)
         nn.init.zeros_(self.output_proj.bias)
 
+        # Initialize MLP layers with normal(0, 0.02)
         for block in self.blocks:
             for m in block.mlp:
                 if isinstance(m, nn.Linear):
-                    nn.init.xavier_uniform_(m.weight)
+                    nn.init.normal_(m.weight, mean=0.0, std=0.02)
                     nn.init.zeros_(m.bias)
 
     def forward(self, tokens: torch.Tensor) -> torch.Tensor:
@@ -258,33 +273,42 @@ class ICLinearRegressionTransformer(nn.Module):
 
 def train_ic_regression(
     cfg: ICRegConfig,
-    M: Optional[Union[int, str]],
+    M: Optional[Union[int, str]] = None,
     num_steps: int = 150_000,
     batch_size: int = 1024,
     print_every: int = 1000,
     eval_every: Optional[int] = None,
+    learning_rate: float = 1e-3,  # Default matching reference implementation
+    grad_clip: Optional[float] = 1.0,
+    warmup_steps: Optional[int] = None,  # If None, uses constant LR; if set, uses triangle schedule
+    skip_first_prediction: bool = False,  # Reference implementation computes loss on all predictions
 ):
     """
     Basic training loop for a single task diversity M.
 
     - M integer  => Uniform over {t_1,...,t_M}
     - M == 'inf' => Gaussian task prior N(0, I_D)
+    - If M is None, uses cfg.M from config
 
     This matches the high-level setup of Section 3 and 4 in the paper.
     """
 
     device = cfg.device
+    # Use M from parameter if provided, otherwise use cfg.M
+    M = M if M is not None else cfg.M
 
     # Pre-sample nested tasks (shared across all M if you re-use)
-    tasks = sample_task_sequence(cfg.max_M, cfg.D).to(device)
+    # Keep on CPU for dataset - will be moved to device in training loop
+    tasks = sample_task_sequence(cfg.max_M, cfg.D)
 
     # Build dataset & dataloader
+    # Dataset always uses CPU - tensors moved to device in training loop
     dataset = InContextLinearRegressionDataset(
         cfg=cfg,
         tasks=tasks,
         M=M,
         num_samples=1_000_000,  # effectively infinite
-        device=device,
+        device="cpu",  # Always CPU in dataset
     )
     dataloader = DataLoader(
         dataset,
@@ -300,7 +324,7 @@ def train_ic_regression(
             tasks=None,   # ignore tasks, sample t ~ N(0, I_D)
             M="inf",
             num_samples=10_000,
-            device=device,
+            device="cpu",  # Always CPU in dataset
         )
         ood_loader = DataLoader(
             ood_dataset,
@@ -314,10 +338,33 @@ def train_ic_regression(
     # Model
     model = ICLinearRegressionTransformer(cfg).to(device)
 
-    # Optimizer (Adam, constant LR like the paper after warm-up)
-    optimizer = torch.optim.Adam(model.parameters(), lr=3e-3)
+    # Optimizer (Adam)
+    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+    
+    # Learning rate schedule: triangle (warmup + linear decay) if warmup_steps is set
+    if warmup_steps is not None:
+        def lr_lambda(step):
+            if step < warmup_steps:
+                # Warmup: linear increase from 0 to learning_rate
+                return step / warmup_steps
+            else:
+                # Linear decay from learning_rate to 0
+                decay_steps = num_steps - warmup_steps
+                return max(0.0, 1.0 - (step - warmup_steps) / decay_steps)
+        scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+    else:
+        scheduler = None
 
-    # Simple cosine annealing or constant; here constant for simplicity
+    # Print device information
+    print(f"Training on device: {device}")
+    if device.startswith("cuda"):
+        print(f"  CUDA device: {torch.cuda.get_device_name(0)}")
+        print(f"  CUDA memory allocated: {torch.cuda.memory_allocated(0) / 1024**2:.2f} MB")
+    if warmup_steps is not None:
+        print(f"  Using triangle LR schedule: warmup={warmup_steps} steps, then linear decay")
+    else:
+        print(f"  Using constant LR: {learning_rate}")
+
     step = 0
     running_loss = 0.0
 
@@ -336,9 +383,25 @@ def train_ic_regression(
 
         optimizer.zero_grad()
         y_pred = model.predict_y_from_x_tokens(tokens)  # (B, K)
-        loss = F.mse_loss(y_pred, y)
+        
+        # Optionally skip first prediction (k=1) which has no context
+        if skip_first_prediction and y_pred.shape[1] > 1:
+            # Only compute loss on predictions k=2,...,K (indices 1,...,K-1)
+            loss = F.mse_loss(y_pred[:, 1:], y[:, 1:])
+        else:
+            loss = F.mse_loss(y_pred, y)
+        
         loss.backward()
+        
+        # Gradient clipping to prevent instability
+        if grad_clip is not None:
+            torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+        
         optimizer.step()
+        
+        # Update learning rate schedule
+        if scheduler is not None:
+            scheduler.step()
 
         running_loss += loss.item()
         step += 1
@@ -386,16 +449,19 @@ def evaluate_ic_regression(
 
 if __name__ == "__main__":
     cfg = ICRegConfig()
+    # M is set in the config (default 80), can override here if needed
+    # cfg.M = 1  # Example: train on single task
 
-    # Example: train at task diversity M = 64
+    # Train with M from config
     model_M64 = train_ic_regression(
         cfg,
-        M=64,
-        num_steps=10_000,   # reduce for a quick test; paper uses 150k
+        num_steps=50_000,   # increased to see if loss improves; paper uses 150k
         batch_size=256,     # smaller batch to fit on modest GPUs if needed
-        print_every=500,
-        eval_every=2_000,
+        print_every=1_000,
+        eval_every=5_000,
+        warmup_steps=25_000,  # 50% warmup (matching reference: 250k warmup for 500k total)
     )
 
     # Example: train at M = 'inf' (Gaussian task prior)
-    # model_Minf = train_ic_regression(cfg, M="inf", num_steps=10_000)
+    # cfg.M = "inf"
+    # model_Minf = train_ic_regression(cfg, num_steps=10_000)
