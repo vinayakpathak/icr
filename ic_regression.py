@@ -1,4 +1,5 @@
 import math
+import os
 from dataclasses import dataclass
 from typing import Optional, Union
 
@@ -282,6 +283,8 @@ def train_ic_regression(
     grad_clip: Optional[float] = 1.0,
     warmup_steps: Optional[int] = None,  # If None, uses constant LR; if set, uses triangle schedule
     skip_first_prediction: bool = False,  # Reference implementation computes loss on all predictions
+    checkpoint_dir: Optional[str] = "checkpoints",  # Directory to save checkpoints
+    checkpoint_every: Optional[int] = None,  # Save checkpoint every N steps (None = only at end)
 ):
     """
     Basic training loop for a single task diversity M.
@@ -296,6 +299,11 @@ def train_ic_regression(
     device = cfg.device
     # Use M from parameter if provided, otherwise use cfg.M
     M = M if M is not None else cfg.M
+
+    # Create checkpoint directory
+    if checkpoint_dir is not None:
+        os.makedirs(checkpoint_dir, exist_ok=True)
+        print(f"Checkpoints will be saved to: {checkpoint_dir}")
 
     # Pre-sample nested tasks (shared across all M if you re-use)
     # Keep on CPU for dataset - will be moved to device in training loop
@@ -415,6 +423,18 @@ def train_ic_regression(
             eval_loss = evaluate_ic_regression(model, cfg, ood_loader, device)
             print(f"[step {step}] OOD eval (M=inf) loss={eval_loss:.4f}")
 
+        # Save checkpoint periodically
+        if checkpoint_dir is not None and checkpoint_every is not None and step % checkpoint_every == 0:
+            checkpoint_path = os.path.join(checkpoint_dir, f"checkpoint_step_{step}.pt")
+            save_checkpoint(checkpoint_path, model, optimizer, scheduler, step, cfg, M)
+            print(f"[step {step}] Saved checkpoint to {checkpoint_path}")
+
+    # Save final checkpoint
+    if checkpoint_dir is not None:
+        final_checkpoint_path = os.path.join(checkpoint_dir, "checkpoint_final.pt")
+        save_checkpoint(final_checkpoint_path, model, optimizer, scheduler, step, cfg, M)
+        print(f"Saved final checkpoint to {final_checkpoint_path}")
+
     return model
 
 
@@ -444,6 +464,87 @@ def evaluate_ic_regression(
 
 
 # =====================
+#  Checkpoint saving and loading
+# =====================
+
+def save_checkpoint(
+    checkpoint_path: str,
+    model: ICLinearRegressionTransformer,
+    optimizer: torch.optim.Optimizer,
+    scheduler: Optional[torch.optim.lr_scheduler._LRScheduler],
+    step: int,
+    cfg: ICRegConfig,
+    M: Union[int, str],
+):
+    """
+    Save a training checkpoint.
+    
+    Args:
+        checkpoint_path: Path to save the checkpoint
+        model: The model to save
+        optimizer: The optimizer state
+        scheduler: The learning rate scheduler (optional)
+        step: Current training step
+        cfg: Configuration used for training
+        M: Task diversity parameter
+    """
+    checkpoint = {
+        "step": step,
+        "model_state_dict": model.state_dict(),
+        "optimizer_state_dict": optimizer.state_dict(),
+        "cfg": cfg,
+        "M": M,
+    }
+    
+    if scheduler is not None:
+        checkpoint["scheduler_state_dict"] = scheduler.state_dict()
+    
+    torch.save(checkpoint, checkpoint_path, _use_new_zipfile_serialization=False)
+
+
+def load_checkpoint(
+    checkpoint_path: str,
+    device: Optional[str] = None,
+) -> tuple[ICLinearRegressionTransformer, torch.optim.Optimizer, Optional[torch.optim.lr_scheduler._LRScheduler], int, ICRegConfig, Union[int, str]]:
+    """
+    Load a training checkpoint.
+    
+    Args:
+        checkpoint_path: Path to the checkpoint file
+        device: Device to load the model on (uses cfg.device if None)
+    
+    Returns:
+        Tuple of (model, optimizer, scheduler, step, cfg, M)
+    """
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+    
+    cfg = checkpoint["cfg"]
+    if device is None:
+        device = cfg.device
+    
+    # Create model and optimizer
+    model = ICLinearRegressionTransformer(cfg).to(device)
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)  # LR will be overridden by state_dict
+    
+    # Load state dicts
+    model.load_state_dict(checkpoint["model_state_dict"])
+    optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+    
+    # Recreate scheduler if it existed
+    scheduler = None
+    if "scheduler_state_dict" in checkpoint:
+        # Note: Scheduler state is saved but we need to recreate it with the same parameters
+        # For simplicity, we'll just load the state if it exists
+        # In practice, you may want to save scheduler parameters separately
+        pass  # Scheduler recreation would need the original parameters
+    
+    step = checkpoint["step"]
+    M = checkpoint["M"]
+    
+    return model, optimizer, scheduler, step, cfg, M
+
+
+# =====================
 #  Example usage
 # =====================
 
@@ -460,8 +561,26 @@ if __name__ == "__main__":
         print_every=1_000,
         eval_every=5_000,
         warmup_steps=25_000,  # 50% warmup (matching reference: 250k warmup for 500k total)
+        checkpoint_dir="checkpoints",  # Directory to save checkpoints
+        checkpoint_every=10_000,  # Save checkpoint every 10k steps
     )
+
+    # Example: Load a checkpoint for evaluation
+    # model, optimizer, scheduler, step, cfg, M = load_checkpoint("checkpoints/checkpoint_final.pt")
+    # model.eval()
+    # # Now you can use the model for evaluation
 
     # Example: train at M = 'inf' (Gaussian task prior)
     # cfg.M = "inf"
     # model_Minf = train_ic_regression(cfg, num_steps=10_000)
+
+    # Example: Load checkpoint and make predictions
+    # from predict import predict_from_prompt
+    # import torch
+    # # Create some context examples
+    # x_context = torch.randn(5, 8)  # 5 context examples, D=8
+    # y_context = torch.randn(5)     # 5 context y values
+    # # Create query points
+    # x_query = torch.randn(3, 8)    # 3 query points
+    # # Get predictions
+    # y_pred = predict_from_prompt("checkpoints/checkpoint_final.pt", x_context, y_context, x_query)
