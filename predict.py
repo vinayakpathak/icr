@@ -2,7 +2,8 @@
 Functions for loading checkpoints and making predictions with trained models.
 """
 
-from typing import Optional
+import math
+from typing import Optional, Union, List, Tuple
 
 import torch
 
@@ -12,6 +13,76 @@ from ic_regression import (
     encode_sequence_tokens,
     load_checkpoint,
 )
+
+
+def create_prompt(
+    thetas: List[Tuple[torch.Tensor, int]],
+    query_theta: Optional[torch.Tensor] = None,
+    n_query: int = 1,
+    D: int = 8,
+    sigma2: float = 0.125,
+    seed: Optional[int] = None,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """
+    Create a prompt from a series of thetas and example counts.
+    
+    Args:
+        thetas: List of (theta, n_examples) tuples where:
+            - theta: Task vector of shape (D,)
+            - n_examples: Number of (x, y) examples to generate from this theta
+        query_theta: Optional task vector for query points. If None, uses the last theta.
+        n_query: Number of query points to generate
+        D: Dimension of the task (default: 8)
+        sigma2: Noise variance (default: 0.125)
+        seed: Random seed for reproducibility (optional)
+    
+    Returns:
+        Tuple of (x_context, y_context, x_query) ready for predict_from_prompt()
+    
+    Example:
+        >>> import torch
+        >>> theta1 = torch.randn(8)
+        >>> theta2 = torch.randn(8)
+        >>> x_context, y_context, x_query = create_prompt(
+        ...     [(theta1, 3), (theta2, 2)],  # 3 examples from theta1, 2 from theta2
+        ...     query_theta=theta2,  # Query points from theta2
+        ...     n_query=2
+        ... )
+    """
+    if seed is not None:
+        torch.manual_seed(seed)
+    
+    # Collect all context examples
+    x_context_list = []
+    y_context_list = []
+    
+    for theta, n_examples in thetas:
+        if theta.shape[0] != D:
+            raise ValueError(f"Theta dimension {theta.shape[0]} doesn't match D={D}")
+        
+        # Generate n_examples from this theta
+        x = torch.randn(n_examples, D)
+        noise = torch.randn(n_examples) * math.sqrt(sigma2)
+        y = x @ theta + noise
+        
+        x_context_list.append(x)
+        y_context_list.append(y)
+    
+    # Concatenate all context examples
+    x_context = torch.cat(x_context_list, dim=0)  # (total_context, D)
+    y_context = torch.cat(y_context_list, dim=0)  # (total_context,)
+    
+    # Generate query points
+    if query_theta is None:
+        # Use the last theta if not specified
+        query_theta = thetas[-1][0]
+    
+    if query_theta.shape[0] != D:
+        raise ValueError(f"Query theta dimension {query_theta.shape[0]} doesn't match D={D}")
+    
+    x_query = torch.randn(n_query, D)
+    
+    return x_context, y_context, x_query
 
 
 def predict_from_prompt(
@@ -139,21 +210,31 @@ if __name__ == "__main__":
     import torch
     
     print("=" * 60)
-    print("Demonstrating predict_from_prompt function")
+    print("Demonstrating create_prompt and predict_from_prompt functions")
     print("=" * 60)
     
-    # Create some context examples (the "prompt" for in-context learning)
-    # These are (x, y) pairs that the model will use to learn the task
+    # Example 1: Create prompt from multiple thetas
     torch.manual_seed(42)  # For reproducibility
-    x_context = torch.randn(5, 8)  # 5 context examples, D=8
     
-    # For a realistic demo, let's create y values from a linear relationship
-    # with some noise (simulating a real task)
-    t_true = torch.randn(8)  # True task vector
-    y_context = (x_context @ t_true) + 0.1 * torch.randn(5)  # y = x @ t + noise
+    theta1 = torch.randn(8)  # First task
+    theta2 = torch.randn(8)  # Second task
     
-    # Create query points to predict
-    x_query = torch.randn(3, 8)    # 3 query points
+    print("\nCreating prompt with:")
+    print(f"  - 3 examples from theta1")
+    print(f"  - 2 examples from theta2")
+    print(f"  - 3 query points from theta2")
+    
+    x_context, y_context, x_query = create_prompt(
+        [(theta1, 3), (theta2, 2)],  # 3 examples from theta1, 2 from theta2
+        query_theta=theta2,  # Query points from theta2
+        n_query=3,
+        D=8,
+        sigma2=0.125,
+        seed=42
+    )
+    
+    print(f"\nGenerated context: {x_context.shape[0]} examples")
+    print(f"Generated query: {x_query.shape[0]} points")
     
     print("\nUsing checkpoint: checkpoints/checkpoint_final.pt")
     print("\n" + "-" * 60)
@@ -166,7 +247,7 @@ if __name__ == "__main__":
     print(f"Predictions: {y_pred.cpu().tolist()}")
     
     # Also show what the true values would be (for comparison)
-    y_true = x_query @ t_true
+    y_true = x_query @ theta2
     print(f"\nTrue values (for comparison): {y_true.tolist()}")
     if len(y_pred) == len(y_true):
         # Move y_pred to CPU if needed for comparison
