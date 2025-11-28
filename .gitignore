@@ -48,4 +48,6 @@ ENV/
 .env
 .env.local
 
+# Generated results
+gradient_results.json
 
