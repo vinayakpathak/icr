@@ -50,4 +50,13 @@ ENV/
 
 # Generated results
 gradient_results.json
+experiment_metadata.json
+analysis_results.json
+
+# Experiment checkpoints
+checkpoints_M*/
+
+# Logs and process IDs
+logs/*.pid
+logs/*.log
 

@@ -21,7 +21,7 @@ class ICRegConfig:
     d_model: int = 512
     d_mlp: int = 512
     n_heads: int = 4
-    n_layers: int = 8     # number of transformer blocks (L in the paper)
+    n_layers: int = 3     # number of transformer blocks (L in the paper) - reduced from 8 to 3
     use_prenorm: bool = True  # True for pre-layer-norm, False for post-layer-norm (GPT2 style)
     M: Union[int, str] = 64  # task diversity: int for uniform over {t_1,...,t_M}, "inf" for Gaussian
     max_M: int = 32768    # max number of discrete tasks to pre-sample
@@ -285,6 +285,9 @@ def train_ic_regression(
     skip_first_prediction: bool = False,  # Reference implementation computes loss on all predictions
     checkpoint_dir: Optional[str] = "checkpoints",  # Directory to save checkpoints
     checkpoint_every: Optional[int] = None,  # Save checkpoint every N steps (None = only at end)
+    early_stopping_patience: Optional[int] = None,  # Stop if loss doesn't improve for N evaluations (None = no early stopping)
+    early_stopping_min_delta: float = 1e-6,  # Minimum change to qualify as improvement
+    early_stopping_eval_every: Optional[int] = None,  # Evaluate for early stopping every N steps (defaults to print_every)
 ):
     """
     Basic training loop for a single task diversity M.
@@ -323,7 +326,30 @@ def train_ic_regression(
         batch_size=batch_size,
         shuffle=True,
         drop_last=True,
+        num_workers=8,  # Parallel data loading (increased for better throughput)
+        pin_memory=True if device.startswith("cuda") else False,  # Faster GPU transfer
+        persistent_workers=True if device.startswith("cuda") else False,  # Keep workers alive between epochs
     )
+
+    # Validation dataset for early stopping (same distribution as training)
+    if early_stopping_patience is not None:
+        val_dataset = InContextLinearRegressionDataset(
+            cfg=cfg,
+            tasks=tasks,  # Same tasks as training
+            M=M,  # Same M as training
+            num_samples=10_000,  # Validation set size
+            device="cpu",  # Always CPU in dataset
+        )
+        val_loader = DataLoader(
+            val_dataset,
+            batch_size=batch_size,
+            shuffle=False,
+            drop_last=False,
+            num_workers=4,  # Parallel data loading for validation
+            pin_memory=True if device.startswith("cuda") else False,
+        )
+    else:
+        val_loader = None
 
     # Optional: OOD eval dataset with M = 'inf'
     if eval_every is not None:
@@ -339,6 +365,8 @@ def train_ic_regression(
             batch_size=batch_size,
             shuffle=False,
             drop_last=False,
+            num_workers=4,  # Parallel data loading for OOD evaluation
+            pin_memory=True if device.startswith("cuda") else False,
         )
     else:
         ood_loader = None
@@ -377,6 +405,12 @@ def train_ic_regression(
     running_loss = 0.0
 
     data_iter = iter(dataloader)
+
+    # Early stopping setup
+    best_loss = float('inf')
+    patience_counter = 0
+    early_stopping_eval_interval = early_stopping_eval_every if early_stopping_eval_every is not None else print_every
+    recent_losses = []  # Track recent losses for convergence detection
 
     model.train()
     while step < num_steps:
@@ -418,6 +452,31 @@ def train_ic_regression(
             avg_loss = running_loss / print_every
             print(f"[step {step}] train M={M}, loss={avg_loss:.4f}")
             running_loss = 0.0
+            
+            # Early stopping check (using validation loss from same distribution)
+            if early_stopping_patience is not None and step % early_stopping_eval_interval == 0:
+                # Evaluate on fresh validation set
+                model.eval()
+                val_loss = evaluate_ic_regression(model, cfg, val_loader, device)
+                model.train()
+                
+                recent_losses.append(val_loss)
+                # Keep only last few losses for comparison
+                if len(recent_losses) > 10:
+                    recent_losses.pop(0)
+                
+                # Check if validation loss improved
+                if val_loss < best_loss - early_stopping_min_delta:
+                    best_loss = val_loss
+                    patience_counter = 0
+                else:
+                    patience_counter += 1
+                
+                # Check convergence: if validation loss hasn't improved for patience steps
+                if patience_counter >= early_stopping_patience:
+                    print(f"[step {step}] Early stopping: validation loss hasn't improved for {patience_counter} evaluations")
+                    print(f"  Best validation loss: {best_loss:.6f}, Current validation loss: {val_loss:.6f}")
+                    break
 
         if eval_every is not None and step % eval_every == 0:
             eval_loss = evaluate_ic_regression(model, cfg, ood_loader, device)

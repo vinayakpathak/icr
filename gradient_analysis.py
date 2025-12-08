@@ -152,6 +152,12 @@ def compute_expected_loss_gradient(
     
     Score function estimator: ∇_φ E[L] ≈ (1/n_prompts) Σ L_i * ∇_φ log p(x_i, θ_i, y_i | φ)
     
+    For in-distribution gradients, use parameters matching the training distribution:
+    - mu_x=0.0, sigma_x=1.0: matches x ~ N(0, 1) used in training
+    - mu_theta=0.0, sigma_theta=1.0: approximates Uniform({t_1,...,t_M}) where t_i ~ N(0, I_D)
+      (uses Gaussian approximation for the discrete Uniform distribution)
+    - mu_noise=0.0, sigma_noise=sqrt(0.125) ≈ 0.354: matches y = theta^T x + N(0, 0.125)
+    
     Args:
         model: Trained transformer model
         mu_x, sigma_x, mu_theta, sigma_theta, mu_noise, sigma_noise: Distribution parameters (with requires_grad=True)

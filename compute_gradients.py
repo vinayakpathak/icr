@@ -57,6 +57,12 @@ def compute_gradients_for_checkpoints(
     """
     Compute gradients for all checkpoints.
     
+    Default parameters match the training distribution (in-distribution):
+    - mu_x=0.0, sigma_x=1.0: matches x ~ N(0, 1) used in training
+    - mu_theta=0.0, sigma_theta=1.0: approximates Uniform({t_1,...,t_M}) where t_i ~ N(0, I_D)
+      (uses Gaussian approximation for the discrete Uniform distribution)
+    - mu_noise=0.0, sigma_noise=sqrt(0.125) ≈ 0.354: matches y = theta^T x + N(0, 0.125)
+    
     Args:
         checkpoint_dir: Directory containing checkpoints
         output_file: File to save results (JSON format)
