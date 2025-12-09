@@ -30,7 +30,7 @@ def run_m_diversity_experiment(
     Train models with exponentially increasing task diversity M.
     
     Args:
-        max_power: Maximum power of 2 (M will go up to 2^max_power)
+        max_power: Maximum power of 2 (M will range from 2^1 to 2^max_power)
         num_steps: Number of training steps per model
         batch_size: Batch size for training
         checkpoint_every: Save checkpoint every N steps (None = only final)
@@ -41,9 +41,11 @@ def run_m_diversity_experiment(
         eval_every: Evaluate OOD every N steps (None = no evaluation during training)
         skip_first_prediction: Whether to skip first prediction in loss computation
         base_checkpoint_dir: Base directory for checkpoints (will create subdirectories)
+        early_stopping_patience: Stop if loss doesn't improve for N evaluations
+        early_stopping_min_delta: Minimum change to qualify as improvement
     """
-    # Generate M values: 2^0, 2^1, ..., 2^max_power
-    M_values = [2**i for i in range(max_power + 1)]
+    # Generate M values: 2^1, 2^2, ..., 2^max_power
+    M_values = [2**i for i in range(1, max_power + 1)]
     
     print(f"Training models for M values: {M_values}")
     print(f"Total models to train: {len(M_values)}")
@@ -72,6 +74,8 @@ def run_m_diversity_experiment(
         "eval_every": eval_every,
         "skip_first_prediction": skip_first_prediction,
         "base_checkpoint_dir": base_checkpoint_dir,
+        "early_stopping_patience": early_stopping_patience,
+        "early_stopping_min_delta": early_stopping_min_delta,
     }
     
     # Train model for each M value
@@ -125,8 +129,8 @@ def run_m_diversity_experiment(
 if __name__ == "__main__":
     import argparse
     
-    parser = argparse.ArgumentParser(description="Train models with exponentially increasing M values")
-    parser.add_argument("--max_power", type=int, default=20, help="Maximum power of 2 (M up to 2^max_power)")
+    parser = argparse.ArgumentParser(description="Train models with exponentially increasing M values (2^1 to 2^max_power)")
+    parser.add_argument("--max_power", type=int, default=20, help="Maximum power of 2 (M ranges from 2^1 to 2^max_power)")
     parser.add_argument("--num_steps", type=int, default=150_000, help="Number of training steps per model")
     parser.add_argument("--batch_size", type=int, default=2048, help="Batch size (increased default for better GPU utilization)")
     parser.add_argument("--checkpoint_every", type=int, default=None, help="Save checkpoint every N steps (None = only final)")
