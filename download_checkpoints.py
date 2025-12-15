@@ -7,6 +7,7 @@ Parses SSH config to get connection details automatically.
 
 import argparse
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -105,6 +106,7 @@ def build_rsync_command(
     local_path: str,
     ssh_config: Dict[str, Optional[str]],
     dry_run: bool = False,
+    use_checksum: bool = False,
 ) -> list:
     """
     Build rsync command with SSH options from config.
@@ -115,6 +117,7 @@ def build_rsync_command(
         local_path: Local download directory path
         ssh_config: Parsed SSH config dictionary
         dry_run: If True, add --dry-run flag
+        use_checksum: If True, use checksum comparison (slower but more thorough)
         
     Returns:
         List of command arguments for subprocess
@@ -152,8 +155,13 @@ def build_rsync_command(
         "--progress",  # Show progress
         "--partial",  # Keep partial files on interruption
         "--partial-dir=.rsync-partial",  # Directory for partial files
+        "--itemize-changes",  # Show detailed information about what's being transferred/skipped
         "-e", ssh_cmd,  # SSH command
     ]
+    
+    # Use checksum for more thorough comparison (slower but verifies file integrity)
+    if use_checksum:
+        rsync_cmd.append("--checksum")
     
     if dry_run:
         rsync_cmd.append("--dry-run")
@@ -182,19 +190,37 @@ def download_checkpoints(
     remote_path: str = "/root/icr/checkpoints/",
     local_path: str = "~/icr_checkpoints",
     dry_run: bool = False,
+    use_checksum: bool = False,
 ) -> None:
     """
     Download all checkpoints from remote server to local machine.
+    
+    **Automatic Skip Logic**: rsync automatically skips files that already exist 
+    locally with the same size and modification time. Files are only downloaded if:
+    - They don't exist locally, OR
+    - They differ in size or modification time from the remote version
+    
+    This means you can safely run this script multiple times - it will only download
+    new or changed files, making it efficient for incremental updates.
     
     Args:
         remote_host: SSH host alias to look up in SSH config
         remote_path: Remote checkpoint directory path
         local_path: Local download directory path
         dry_run: If True, show what would be downloaded without downloading
+        use_checksum: If True, use checksum comparison instead of size/mtime (slower but more thorough)
     """
     print(f"Downloading checkpoints from {remote_host}...")
     print(f"  Remote path: {remote_path}")
     print(f"  Local path: {local_path}")
+    print()
+    print("Skip logic: Files that already exist locally with the same size and")
+    print("  modification time will be automatically skipped (not re-downloaded).")
+    if use_checksum:
+        print(f"  Checksum mode: Enabled (compares file checksums instead of size/mtime)")
+        print("  This is slower but verifies file integrity more thoroughly.")
+    else:
+        print("  Comparison method: Size and modification time (fast)")
     if dry_run:
         print("  Mode: DRY RUN (no files will be downloaded)")
     print()
@@ -241,6 +267,7 @@ def download_checkpoints(
             local_path=local_path_expanded,
             ssh_config=ssh_config,
             dry_run=dry_run,
+            use_checksum=use_checksum,
         )
     except Exception as e:
         print(f"ERROR: Failed to build rsync command: {e}")
@@ -262,9 +289,58 @@ def download_checkpoints(
             bufsize=1,
         )
         
-        # Print output in real-time
+        # Track statistics
+        files_transferred = 0
+        files_skipped = 0
+        bytes_transferred = 0
+        
+        # Print output in real-time and parse for statistics
         for line in process.stdout:
             print(line, end="")
+            # Parse rsync itemize-changes output
+            # Format examples:
+            #   >f+++++++++ filename  - new file being transferred
+            #   >f.st...... filename  - file being updated (size/time changed)
+            #   .f          filename  - file skipped (unchanged)
+            #   >d+++++++++ dirname/  - new directory
+            #   .d          dirname/  - directory skipped (unchanged)
+            stripped_line = line.strip()
+            if stripped_line:
+                # Check if this is an itemize-changes line (starts with > or .)
+                if stripped_line[0] in ">.":
+                    # Check if it's a file (f) or directory (d)
+                    if len(stripped_line) > 1:
+                        item_type = stripped_line[1]
+                        if item_type == "f":  # File
+                            if stripped_line[0] == ">":
+                                files_transferred += 1
+                            elif stripped_line[0] == ".":
+                                files_skipped += 1
+                        elif item_type == "d":  # Directory
+                            if stripped_line[0] == ">":
+                                files_transferred += 1
+                            elif stripped_line[0] == ".":
+                                files_skipped += 1
+                # Parse progress lines for bytes transferred
+                # Format: "filename 1,234,567  50%  123.45kB/s    0:00:05"
+                elif "kB/s" in line or "MB/s" in line or "%" in line:
+                    # Try to extract bytes from progress line
+                    parts = line.split()
+                    for part in parts:
+                        if part.replace(",", "").replace(".", "").isdigit() and "kB" in line:
+                            try:
+                                # Extract number before kB/MB
+                                match = re.search(r'([\d,]+\.?\d*)\s*(kB|MB)', line)
+                                if match:
+                                    value = float(match.group(1).replace(",", ""))
+                                    unit = match.group(2)
+                                    if unit == "MB":
+                                        bytes_transferred += int(value * 1024 * 1024)
+                                    elif unit == "kB":
+                                        bytes_transferred += int(value * 1024)
+                                    break
+                            except:
+                                pass
         
         process.wait()
         
@@ -273,7 +349,21 @@ def download_checkpoints(
             if dry_run:
                 print("✓ Dry run completed successfully")
             else:
+                print()
                 print("✓ Download completed successfully")
+                print()
+                print("Summary:")
+                if files_skipped > 0:
+                    print(f"  ✓ Files skipped (already up-to-date): {files_skipped}")
+                if files_transferred > 0:
+                    print(f"  ↓ Files transferred: {files_transferred}")
+                    if bytes_transferred > 0:
+                        if bytes_transferred > 1024 * 1024:
+                            print(f"  ↓ Data transferred: {bytes_transferred / (1024*1024):.2f} MB")
+                        else:
+                            print(f"  ↓ Data transferred: {bytes_transferred / 1024:.2f} kB")
+                if files_transferred == 0 and files_skipped == 0:
+                    print("  (No files found or processed)")
         else:
             print()
             print(f"ERROR: rsync failed with exit code {process.returncode}")
@@ -317,6 +407,11 @@ def main():
         action="store_true",
         help="Show what would be downloaded without actually downloading",
     )
+    parser.add_argument(
+        "--checksum",
+        action="store_true",
+        help="Use checksum comparison instead of size/mtime (slower but more thorough)",
+    )
     
     args = parser.parse_args()
     
@@ -325,6 +420,7 @@ def main():
         remote_path=args.remote_path,
         local_path=args.local_path,
         dry_run=args.dry_run,
+        use_checksum=args.checksum,
     )
 
 
