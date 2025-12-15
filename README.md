@@ -59,6 +59,7 @@ icr/
 ├── regression_analysis.py        # Regression analysis of results
 ├── test_predict.py               # Unit tests for prediction functions
 ├── run_experiment.sh             # Shell script wrapper for experiments
+├── download_checkpoints.py       # Download checkpoints from remote server to local machine
 ├── requirements.txt              # Python dependencies
 ├── checkpoints/                  # Saved model checkpoints (created during training)
 ├── plots/                        # Generated plots and visualizations
@@ -262,6 +263,57 @@ tail -50 experiment_output.log
 ```bash
 ls -lh checkpoints/checkpoints_M*/
 ```
+
+## Downloading Checkpoints
+
+After training on a remote server, you can download all checkpoints to your local machine using the `download_checkpoints.py` script. This script:
+
+- **Zero dependencies**: Uses only Python standard library (no pip install needed)
+- **Automatic SSH config parsing**: Reads your `~/.ssh/config` file automatically
+- **Incremental sync**: Skips already-downloaded files automatically
+- **Progress display**: Shows real-time download progress
+
+### Prerequisites
+
+- `rsync` installed on your laptop (pre-installed on macOS and most Linux distributions)
+- SSH access configured to your remote server (with host alias in `~/.ssh/config`)
+
+### Usage
+
+**Basic usage** (downloads to `~/icr_checkpoints`):
+```bash
+python download_checkpoints.py
+```
+
+**Test first with dry-run** (see what would be downloaded without downloading):
+```bash
+python download_checkpoints.py --dry-run
+```
+
+**Custom paths**:
+```bash
+python download_checkpoints.py \
+    --remote-host vast-gpu \
+    --remote-path /root/icr/checkpoints/ \
+    --local-path ~/my_checkpoints
+```
+
+### Command-line Options
+
+- `--remote-host`: SSH host alias from your SSH config (default: `vast-gpu`)
+- `--remote-path`: Remote checkpoint directory path (default: `/root/icr/checkpoints/`)
+- `--local-path`: Local download directory path (default: `~/icr_checkpoints`)
+- `--dry-run`: Show what would be downloaded without actually downloading
+
+### How It Works
+
+The script automatically:
+1. Parses your `~/.ssh/config` file to extract connection details (HostName, Port, User, IdentityFile)
+2. Uses `rsync` to efficiently sync files from remote to local
+3. Skips files that already exist locally with the same size and modification time
+4. Preserves the directory structure (`checkpoints_M*/` subdirectories)
+
+**Note**: When your server IP/port changes, just update `~/.ssh/config` - the script will automatically pick up the new details.
 
 ## Output Files
 
