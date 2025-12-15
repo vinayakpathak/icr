@@ -1,0 +1,123 @@
+{
+  "num_checkpoints": 12,
+  "config": {
+    "n_prompt": 20,
+    "target_value": 15.0,
+    "l1_penalty": 2.0,
+    "l2_penalty": 2.0,
+    "learning_rate": 0.1,
+    "num_steps": 100,
+    "optimize_x": false,
+    "seed": 42
+  },
+  "results": [
+    {
+      "checkpoint_path": "checkpoints/checkpoints_M2/checkpoint_final.pt",
+      "M": 2,
+      "step": 34000,
+      "final_prediction": -1.8753948211669922,
+      "final_loss": 284.7789611816406,
+      "max_perturbation": 0.1514582335948944,
+      "sparsity_count": 20
+    },
+    {
+      "checkpoint_path": "checkpoints/checkpoints_M4/checkpoint_final.pt",
+      "M": 4,
+      "step": 22000,
+      "final_prediction": -0.6576436758041382,
+      "final_loss": 245.1617889404297,
+      "max_perturbation": 0.6666681170463562,
+      "sparsity_count": 19
+    },
+    {
+      "checkpoint_path": "checkpoints/checkpoints_M8/checkpoint_final.pt",
+      "M": 8,
+      "step": 32000,
+      "final_prediction": 1.8872885704040527,
+      "final_loss": 171.9431915283203,
+      "max_perturbation": 1.8573100566864014,
+      "sparsity_count": 10
+    },
+    {
+      "checkpoint_path": "checkpoints/checkpoints_M16/checkpoint_final.pt",
+      "M": 16,
+      "step": 37000,
+      "final_prediction": 1.3664661645889282,
+      "final_loss": 185.87322998046875,
+      "max_perturbation": 3.134227752685547,
+      "sparsity_count": 12
+    },
+    {
+      "checkpoint_path": "checkpoints/checkpoints_M32/checkpoint_final.pt",
+      "M": 32,
+      "step": 32000,
+      "final_prediction": 0.06041234731674194,
+      "final_loss": 223.1912841796875,
+      "max_perturbation": 0.4277610182762146,
+      "sparsity_count": 19
+    },
+    {
+      "checkpoint_path": "checkpoints/checkpoints_M64/checkpoint_final.pt",
+      "M": 64,
+      "step": 70000,
+      "final_prediction": 1.843727469444275,
+      "final_loss": 173.08750915527344,
+      "max_perturbation": 1.4162578582763672,
+      "sparsity_count": 19
+    },
+    {
+      "checkpoint_path": "checkpoints/checkpoints_M128/checkpoint_final.pt",
+      "M": 128,
+      "step": 63000,
+      "final_prediction": 1.9257341623306274,
+      "final_loss": 170.93641662597656,
+      "max_perturbation": 1.6444613933563232,
+      "sparsity_count": 19
+    },
+    {
+      "checkpoint_path": "checkpoints/checkpoints_M256/checkpoint_final.pt",
+      "M": 256,
+      "step": 150000,
+      "final_prediction": 2.9715774059295654,
+      "final_loss": 144.6829376220703,
+      "max_perturbation": 2.130321741104126,
+      "sparsity_count": 12
+    },
+    {
+      "checkpoint_path": "checkpoints/checkpoints_M512/checkpoint_final.pt",
+      "M": 512,
+      "step": 86000,
+      "final_prediction": 4.857062339782715,
+      "final_loss": 102.87918090820312,
+      "max_perturbation": 2.464235544204712,
+      "sparsity_count": 16
+    },
+    {
+      "checkpoint_path": "checkpoints/checkpoints_M1024/checkpoint_final.pt",
+      "M": 1024,
+      "step": 98000,
+      "final_prediction": 4.328560829162598,
+      "final_loss": 113.8796157836914,
+      "max_perturbation": 1.7646842002868652,
+      "sparsity_count": 10
+    },
+    {
+      "checkpoint_path": "checkpoints/checkpoints_M2048/checkpoint_final.pt",
+      "M": 2048,
+      "step": 35000,
+      "final_prediction": 5.781704902648926,
+      "final_loss": 84.97696685791016,
+      "max_perturbation": 2.7227652072906494,
+      "sparsity_count": 12
+    },
+    {
+      "checkpoint_path": "checkpoints/checkpoints_M4096/checkpoint_final.pt",
+      "M": 4096,
+      "step": 34000,
+      "final_prediction": 5.8573150634765625,
+      "final_loss": 83.58868408203125,
+      "max_perturbation": 2.8179733753204346,
+      "sparsity_count": 12
+    }
+  ]
+}
