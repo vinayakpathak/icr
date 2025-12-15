@@ -55,6 +55,9 @@ def run_m_diversity_experiment(
     print(f"  learning_rate: {learning_rate}")
     print(f"  warmup_steps: {warmup_steps}")
     print(f"  checkpoint_every: {checkpoint_every}")
+    if early_stopping_patience is not None:
+        print(f"  early_stopping_patience: {early_stopping_patience}")
+        print(f"  early_stopping_min_delta: {early_stopping_min_delta}")
     print()
     
     # Create base checkpoint directory
