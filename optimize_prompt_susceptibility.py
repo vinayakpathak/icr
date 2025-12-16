@@ -127,10 +127,12 @@ def optimize_prompt_for_checkpoint(
     for param in model.parameters():
         param.requires_grad = False
     
-    # Initialize prompt
+    # Initialize prompt (matching notebook: Y = X @ theta + noise)
     D = cfg.D
     x_context = torch.randn(n_prompt, D, device=device)
-    y_context = torch.randn(n_prompt, device=device)
+    true_theta = torch.randn(D, 1, device=device)
+    noise = 0.1 * torch.randn(n_prompt, 1, device=device)
+    y_context = (x_context @ true_theta + noise).squeeze(1)  # (n_prompt,)
     x_query = torch.randn(1, D, device=device)  # Single query point
     
     # Store initial values
@@ -218,20 +220,21 @@ def optimize_prompt_for_checkpoint(
         # L2: linear in perturbation (magnitude control)
         l2_grad_y = l2_penalty * y_perturbation
         
-        # Combined gradient
-        total_grad_y = y_grad + l1_grad_y + l2_grad_y
-        
-        # Update Y
+        # Update Y (matching notebook protocol)
+        # Notebook uses: Y += lr * (chi_in - l1_grad - l2_grad)
+        # Since chi_in = -loss_grad (gradient to maximize utility = -gradient to minimize loss)
+        # This becomes: Y += lr * (-loss_grad - l1_grad - l2_grad)
+        # Which is: Y -= lr * (loss_grad + l1_grad + l2_grad)
+        # So we use: Y -= lr * (y_grad + l1_grad_y + l2_grad_y)
         with torch.no_grad():
-            y_context.data -= learning_rate * total_grad_y
+            y_context.data -= learning_rate * (y_grad + l1_grad_y + l2_grad_y)
         
-        # Update X if optimizing
+        # Update X if optimizing (same protocol)
         if optimize_x:
             l1_grad_x = l1_penalty * torch.sign(x_perturbation)
             l2_grad_x = l2_penalty * x_perturbation
-            total_grad_x = x_grad + l1_grad_x + l2_grad_x
             with torch.no_grad():
-                x_context.data -= learning_rate * total_grad_x
+                x_context.data -= learning_rate * (x_grad + l1_grad_x + l2_grad_x)
         
         # Track metrics
         current_pred = y_pred.item()
