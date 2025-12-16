@@ -1,5 +1,5 @@
 {
-  "num_checkpoints": 12,
+  "num_checkpoints": 15,
   "config": {
     "n_prompt": 20,
     "target_value": 15.0,
@@ -118,6 +118,33 @@
       "final_loss": 83.58868408203125,
       "max_perturbation": 2.8179733753204346,
       "sparsity_count": 12
+    },
+    {
+      "checkpoint_path": "checkpoints/checkpoints_M8192/checkpoint_final.pt",
+      "M": 8192,
+      "step": 52000,
+      "final_prediction": 6.554050922393799,
+      "final_loss": 71.33406066894531,
+      "max_perturbation": 2.821509599685669,
+      "sparsity_count": 11
+    },
+    {
+      "checkpoint_path": "checkpoints/checkpoints_M16384/checkpoint_final.pt",
+      "M": 16384,
+      "step": 49000,
+      "final_prediction": 6.170534133911133,
+      "final_loss": 77.95946502685547,
+      "max_perturbation": 3.1546196937561035,
+      "sparsity_count": 11
+    },
+    {
+      "checkpoint_path": "checkpoints/checkpoints_M32768/checkpoint_final.pt",
+      "M": 32768,
+      "step": 41000,
+      "final_prediction": 6.796391487121582,
+      "final_loss": 67.2991943359375,
+      "max_perturbation": 2.958484649658203,
+      "sparsity_count": 11
     }
   ]
 }
