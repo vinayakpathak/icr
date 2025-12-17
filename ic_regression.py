@@ -17,14 +17,14 @@ import torch.nn.functional as F
 class ICRegConfig:
     D: int = 8            # task dimension
     K: int = 16           # number of (x, y) pairs per sequence
-    sigma2: float = 0.125 # noise variance
+    sigma2: float = 0.25  # noise variance (matching reference: noise_scale=0.5 -> sigma2=0.25)
     d_model: int = 512
     d_mlp: int = 512
     n_heads: int = 4
-    n_layers: int = 3     # number of transformer blocks (L in the paper) - reduced from 8 to 3
+    n_layers: int = 8     # number of transformer blocks (matching reference)
     use_prenorm: bool = True  # True for pre-layer-norm, False for post-layer-norm (GPT2 style)
     M: Union[int, str] = 64  # task diversity: int for uniform over {t_1,...,t_M}, "inf" for Gaussian
-    max_M: int = 32768    # max number of discrete tasks to pre-sample
+    max_M: int = 33554432  # max number of discrete tasks to pre-sample (2^25)
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
 
 
@@ -102,9 +102,21 @@ class InContextLinearRegressionDataset(Dataset):
             self.M_int = None
         else:
             self.M_int = M
+            # Validate that M doesn't exceed max_M
+            if self.M_int > cfg.max_M:
+                raise ValueError(
+                    f"M={self.M_int} exceeds max_M={cfg.max_M}. "
+                    f"Increase max_M or use M='inf' for Gaussian task prior."
+                )
 
         if self.tasks is not None:
             assert self.tasks.shape[1] == cfg.D
+            # Additional validation: if M is an integer, ensure we have enough tasks
+            if self.M_int is not None and self.tasks.shape[0] < self.M_int:
+                raise ValueError(
+                    f"Not enough pre-sampled tasks: have {self.tasks.shape[0]}, "
+                    f"but M={self.M_int} requires at least {self.M_int} tasks."
+                )
 
     def __len__(self):
         return self.num_samples
@@ -115,6 +127,7 @@ class InContextLinearRegressionDataset(Dataset):
             # "infinite" task diversity: sample t ~ N(0, I_D)
             return torch.randn(D)  # Always on CPU
         else:
+            # Sample uniformly from {t_1, ..., t_M}
             idx = torch.randint(0, self.M_int, (1,))
             return self.tasks[idx].squeeze(0)  # Tasks are on CPU
 
@@ -601,6 +614,34 @@ def load_checkpoint(
     M = checkpoint["M"]
     
     return model, optimizer, scheduler, step, cfg, M
+
+
+def recover_training_tasks(
+    max_M: int = 32768,
+    D: int = 8,
+    seed: int = 0,
+) -> torch.Tensor:
+    """
+    Recover the exact tasks that were used during training.
+    
+    Since tasks are generated deterministically from a fixed seed, we can
+    regenerate the exact same tasks that were used during training.
+    
+    Args:
+        max_M: Maximum number of tasks to generate (default: 32768, the old value used during training)
+        D: Task dimension (default: 8, or use cfg.D from a checkpoint)
+        seed: Random seed used during training (default: 0)
+    
+    Returns:
+        Tasks tensor of shape (max_M, D) - the exact tasks used during training
+    
+    Example:
+        >>> # Recover tasks used during training
+        >>> tasks = recover_training_tasks(max_M=32768, D=8, seed=0)
+        >>> # For a specific M, use first M tasks: tasks[:M]
+        >>> tasks_M64 = tasks[:64]  # Tasks used for M=64
+    """
+    return sample_task_sequence(max_M=max_M, D=D, seed=seed)
 
 
 # =====================

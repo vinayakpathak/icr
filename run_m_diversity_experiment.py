@@ -13,12 +13,12 @@ from ic_regression import ICRegConfig, train_ic_regression
 
 def run_m_diversity_experiment(
     max_power: int = 20,
-    num_steps: int = 150_000,
+    num_steps: int = 500_000,  # Matching reference: 500k steps
     batch_size: int = 2048,  # Increased from 1024 for better GPU utilization
     checkpoint_every: Optional[int] = None,
     learning_rate: float = 1e-3,
     grad_clip: Optional[float] = 1.0,
-    warmup_steps: Optional[int] = None,
+    warmup_steps: Optional[int] = 250_000,  # Matching reference: 250k warmup steps
     print_every: int = 1000,
     eval_every: Optional[int] = None,
     skip_first_prediction: bool = False,
@@ -134,12 +134,12 @@ if __name__ == "__main__":
     
     parser = argparse.ArgumentParser(description="Train models with exponentially increasing M values (2^1 to 2^max_power)")
     parser.add_argument("--max_power", type=int, default=20, help="Maximum power of 2 (M ranges from 2^1 to 2^max_power)")
-    parser.add_argument("--num_steps", type=int, default=150_000, help="Number of training steps per model")
+    parser.add_argument("--num_steps", type=int, default=500_000, help="Number of training steps per model (default: 500k, matching reference)")
     parser.add_argument("--batch_size", type=int, default=2048, help="Batch size (increased default for better GPU utilization)")
     parser.add_argument("--checkpoint_every", type=int, default=None, help="Save checkpoint every N steps (None = only final)")
     parser.add_argument("--learning_rate", type=float, default=1e-3, help="Learning rate")
     parser.add_argument("--grad_clip", type=float, default=1.0, help="Gradient clipping (None = no clipping)")
-    parser.add_argument("--warmup_steps", type=int, default=None, help="Warmup steps for triangle LR schedule (None = constant LR)")
+    parser.add_argument("--warmup_steps", type=int, default=250_000, help="Warmup steps for triangle LR schedule (default: 250k, matching reference; None = constant LR)")
     parser.add_argument("--print_every", type=int, default=1000, help="Print loss every N steps")
     parser.add_argument("--eval_every", type=int, default=None, help="Evaluate OOD every N steps (None = no evaluation)")
     parser.add_argument("--skip_first_prediction", action="store_true", help="Skip first prediction in loss computation")

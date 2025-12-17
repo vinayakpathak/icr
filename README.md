@@ -138,21 +138,21 @@ tail -f experiment_output.log
 
 - `D`: Task dimension (default: 8)
 - `K`: Number of (x, y) pairs per sequence (default: 16)
-- `sigma2`: Noise variance (default: 0.125)
+- `sigma2`: Noise variance (default: 0.25, matching reference: noise_scale=0.5)
 - `d_model`: Transformer model dimension (default: 512)
 - `d_mlp`: MLP dimension (default: 512)
 - `n_heads`: Number of attention heads (default: 4)
-- `n_layers`: Number of transformer layers (default: 3)
+- `n_layers`: Number of transformer layers (default: 8, matching reference)
 - `use_prenorm`: Use pre-layer normalization (default: True)
 - `M`: Task diversity - integer for uniform over {t_1,...,t_M}, "inf" for Gaussian (default: 64)
 - `max_M`: Maximum number of discrete tasks to pre-sample (default: 32768)
 
 ### Training Hyperparameters
 
-- `num_steps`: Number of training steps (default: 150,000)
+- `num_steps`: Number of training steps (default: 500,000, matching reference)
 - `batch_size`: Batch size (default: 2048)
 - `learning_rate`: Learning rate (default: 1e-3)
-- `warmup_steps`: Number of warmup steps for triangle LR schedule (default: None = constant LR)
+- `warmup_steps`: Number of warmup steps for triangle LR schedule (default: 250,000, matching reference; None = constant LR)
 - `grad_clip`: Gradient clipping value (default: 1.0)
 - `checkpoint_every`: Save checkpoint every N steps (default: None = only final)
 - `eval_every`: Evaluate OOD every N steps (default: None = no evaluation)
