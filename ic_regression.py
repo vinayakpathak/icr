@@ -386,9 +386,24 @@ def train_ic_regression(
 
     # Model
     model = ICLinearRegressionTransformer(cfg).to(device)
+    
+    # Compile model for faster training (PyTorch 2.0+)
+    # This is a safe optimization that doesn't change numerical results
+    if hasattr(torch, 'compile'):
+        try:
+            model = torch.compile(model, mode='reduce-overhead')
+            print("  Model compiled with torch.compile() for faster training")
+        except Exception as e:
+            print(f"  Warning: torch.compile() failed: {e}, continuing without compilation")
 
-    # Optimizer (Adam)
-    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+    # Optimizer (Adam with fused option if available)
+    # Fused Adam is faster and produces identical results
+    try:
+        optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, fused=True)
+        print("  Using fused Adam optimizer for faster training")
+    except (TypeError, ValueError):
+        # Fused Adam not available (older PyTorch or CPU), fall back to standard Adam
+        optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
     
     # Learning rate schedule: triangle (warmup + linear decay) if warmup_steps is set
     if warmup_steps is not None:
@@ -404,11 +419,17 @@ def train_ic_regression(
     else:
         scheduler = None
 
+    # Enable cuDNN benchmarking for faster training (safe for consistent input sizes)
+    if device.startswith("cuda") and torch.backends.cudnn.is_available():
+        torch.backends.cudnn.benchmark = True
+
     # Print device information
     print(f"Training on device: {device}")
     if device.startswith("cuda"):
         print(f"  CUDA device: {torch.cuda.get_device_name(0)}")
         print(f"  CUDA memory allocated: {torch.cuda.memory_allocated(0) / 1024**2:.2f} MB")
+        if torch.backends.cudnn.benchmark:
+            print("  cuDNN benchmarking enabled for faster training")
     if warmup_steps is not None:
         print(f"  Using triangle LR schedule: warmup={warmup_steps} steps, then linear decay")
     else:
@@ -433,8 +454,9 @@ def train_ic_regression(
             data_iter = iter(dataloader)
             tokens, y = next(data_iter)
 
-        tokens = tokens.to(device)  # (B, 2K, D+1)
-        y = y.to(device)            # (B, K)
+        # Non-blocking transfer for faster data loading (overlaps with computation)
+        tokens = tokens.to(device, non_blocking=True)  # (B, 2K, D+1)
+        y = y.to(device, non_blocking=True)            # (B, K)
 
         optimizer.zero_grad()
         y_pred = model.predict_y_from_x_tokens(tokens)  # (B, K)
@@ -524,8 +546,8 @@ def evaluate_ic_regression(
     total_loss = 0.0
     n_batches = 0
     for tokens, y in dataloader:
-        tokens = tokens.to(device)
-        y = y.to(device)
+        tokens = tokens.to(device, non_blocking=True)
+        y = y.to(device, non_blocking=True)
         y_pred = model.predict_y_from_x_tokens(tokens)
         loss = F.mse_loss(y_pred, y, reduction="mean")
         total_loss += loss.item()

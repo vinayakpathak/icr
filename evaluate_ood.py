@@ -174,6 +174,68 @@ def evaluate_ridge_ood(
     return (total_loss / n_batches) / D
 
 
+def predict_dmmse(
+    x_context: torch.Tensor,  # (B, K-1, D)
+    y_context: torch.Tensor,  # (B, K-1)
+    x_query: torch.Tensor,    # (B, 1, D)
+    tasks: torch.Tensor,      # (M, D)
+    sigma2: float,
+) -> torch.Tensor:
+    """
+    Core dMMSE prediction function.
+    
+    Computes Bayesian posterior over M tasks and makes predictions using
+    the discrete Maximum Mean Squared Error (dMMSE) algorithm.
+    
+    Args:
+        x_context: Context x values (B, K-1, D)
+        y_context: Context y values (B, K-1)
+        x_query: Query x values (B, 1, D)
+        tasks: M discrete tasks (M, D)
+        sigma2: Noise variance
+    
+    Returns:
+        y_pred: Predicted y values for queries (B,)
+    """
+    # Compute log-likelihoods for all tasks in parallel
+    # For each task theta_i: log P(y_context | x_context, theta_i)
+    # = -0.5 * ||y_context - x_context @ theta_i||^2 / sigma2 - (K-1)/2 * log(2*pi*sigma2)
+    
+    # x_context @ theta_i for all tasks: (B, K-1, D) @ (M, D)^T -> (B, K-1, M)
+    # We want: (B, K-1, D) @ (D, M) -> (B, K-1, M)
+    # tasks is (M, D), so tasks.T is (D, M)
+    y_pred_context = x_context @ tasks.T  # (B, K-1, M)
+    
+    # Compute squared errors: (B, K-1, M)
+    # y_context is (B, K-1), need to expand to (B, K-1, M)
+    y_context_expanded = y_context.unsqueeze(-1)  # (B, K-1, 1)
+    squared_errors = (y_context_expanded - y_pred_context) ** 2  # (B, K-1, M)
+    
+    # Sum over K-1 context examples: (B, M)
+    sum_squared_errors = squared_errors.sum(dim=1)  # (B, M)
+    
+    # Log-likelihood (up to constant): (B, M)
+    log_likelihood = -0.5 * sum_squared_errors / sigma2  # (B, M)
+    # Note: We drop the constant term - (K-1)/2 * log(2*pi*sigma2) since it cancels in normalization
+    
+    # Normalize using log-sum-exp trick to get posterior probabilities
+    # log_posterior_i = log_likelihood_i - log(sum_j exp(log_likelihood_j))
+    log_sum_exp = torch.logsumexp(log_likelihood, dim=-1, keepdim=True)  # (B, 1)
+    log_posterior = log_likelihood - log_sum_exp  # (B, M)
+    posterior = torch.exp(log_posterior)  # (B, M)
+    
+    # Compute predictive mean: E[y | x_query, x_context, y_context]
+    # = sum_i (x_query @ theta_i) * P(theta_i | x_context, y_context)
+    # x_query @ tasks.T: (B, 1, D) @ (D, M) -> (B, 1, M)
+    y_pred_query = x_query @ tasks.T  # (B, 1, M)
+    
+    # Weight by posterior: (B, 1, M) * (B, M) -> (B, 1, M), then sum over M
+    posterior_expanded = posterior.unsqueeze(1)  # (B, 1, M)
+    y_pred = (y_pred_query * posterior_expanded).sum(dim=-1).squeeze(-1)  # (B,)
+    
+    return y_pred
+
+
 def evaluate_dmmse_ood(
     cfg: ICRegConfig,
     tasks: torch.Tensor,
@@ -247,41 +309,8 @@ def evaluate_dmmse_ood(
             x_query = x_all[:, -1:, :]  # (B, 1, D)
             y_query = y_full[:, -1]  # (B,) - true y for query
             
-            # Compute log-likelihoods for all tasks in parallel
-            # For each task theta_i: log P(y_context | x_context, theta_i)
-            # = -0.5 * ||y_context - x_context @ theta_i||^2 / sigma2 - (K-1)/2 * log(2*pi*sigma2)
-            
-            # x_context @ theta_i for all tasks: (B, K-1, D) @ (M, D)^T -> (B, K-1, M)
-            # We want: (B, K-1, D) @ (D, M) -> (B, K-1, M)
-            # tasks is (M, D), so tasks.T is (D, M)
-            y_pred_context = x_context @ tasks.T  # (B, K-1, M)
-            
-            # Compute squared errors: (B, K-1, M)
-            # y_context is (B, K-1), need to expand to (B, K-1, M)
-            y_context_expanded = y_context.unsqueeze(-1)  # (B, K-1, 1)
-            squared_errors = (y_context_expanded - y_pred_context) ** 2  # (B, K-1, M)
-            
-            # Sum over K-1 context examples: (B, M)
-            sum_squared_errors = squared_errors.sum(dim=1)  # (B, M)
-            
-            # Log-likelihood (up to constant): (B, M)
-            log_likelihood = -0.5 * sum_squared_errors / sigma2  # (B, M)
-            # Note: We drop the constant term - (K-1)/2 * log(2*pi*sigma2) since it cancels in normalization
-            
-            # Normalize using log-sum-exp trick to get posterior probabilities
-            # log_posterior_i = log_likelihood_i - log(sum_j exp(log_likelihood_j))
-            log_sum_exp = torch.logsumexp(log_likelihood, dim=-1, keepdim=True)  # (B, 1)
-            log_posterior = log_likelihood - log_sum_exp  # (B, M)
-            posterior = torch.exp(log_posterior)  # (B, M)
-            
-            # Compute predictive mean: E[y | x_query, x_context, y_context]
-            # = sum_i (x_query @ theta_i) * P(theta_i | x_context, y_context)
-            # x_query @ tasks.T: (B, 1, D) @ (D, M) -> (B, 1, M)
-            y_pred_query = x_query @ tasks.T  # (B, 1, M)
-            
-            # Weight by posterior: (B, 1, M) * (B, M) -> (B, 1, M), then sum over M
-            posterior_expanded = posterior.unsqueeze(1)  # (B, 1, M)
-            y_pred = (y_pred_query * posterior_expanded).sum(dim=-1).squeeze(-1)  # (B,)
+            # Use modular dMMSE prediction function
+            y_pred = predict_dmmse(x_context, y_context, x_query, tasks, sigma2)
             
             # Compute loss
             loss = F.mse_loss(y_pred, y_query, reduction="mean")
