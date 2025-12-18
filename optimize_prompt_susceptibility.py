@@ -585,12 +585,17 @@ def plot_optimization_results(
     mapping_type = results.get("mapping_type", "constant")
     n_x_test = results.get("n_x_test", 1)
     
-    # Plot 1: Average Loss Trajectory
+    # Plot 1: Model Output (Prediction) Trajectory
     ax = axes[0, 0]
-    ax.plot(loss_traj, linewidth=3, label="Avg Loss", color="blue")
-    ax.set_title(f"Loss Trajectory (mapping={mapping_type}, n_x_test={n_x_test})")
+    ax.plot(prediction_traj, linewidth=3, label="Model Output", color="blue")
+    if mapping_type == "constant" and target is not None:
+        try:
+            ax.axhline(y=float(target), color="r", linestyle="--", label=f"Target ({target})")
+        except (TypeError, ValueError):
+            pass  # Skip if target is not a valid number
+    ax.set_title(f"Model Output Trajectory (mapping={mapping_type}, n_x_test={n_x_test})")
     ax.set_xlabel("Steps")
-    ax.set_ylabel("Average Loss")
+    ax.set_ylabel("Average Model Output")
     ax.legend()
     ax.grid(True, alpha=0.3)
     
