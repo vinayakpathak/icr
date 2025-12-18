@@ -7,7 +7,7 @@ Analyzes inner susceptibility - how model predictions respond to prompt perturba
 import argparse
 import os
 from pathlib import Path
-from typing import List, Optional, Dict, Tuple
+from typing import List, Optional, Dict, Tuple, Callable
 import json
 
 import torch
@@ -19,7 +19,10 @@ from ic_regression import (
     ICRegConfig,
     encode_sequence_tokens,
     load_checkpoint,
+    recover_training_tasks,
 )
+
+from evaluate_ood import predict_dmmse
 
 
 def find_checkpoints(
@@ -83,10 +86,203 @@ def find_checkpoints(
     return checkpoints
 
 
+def create_ridge_mapping(
+    x_context: torch.Tensor,  # (K, D)
+    y_context: torch.Tensor,  # (K,)
+    cfg: ICRegConfig,
+    reg_lambda: Optional[float] = None,
+) -> Callable[[torch.Tensor], torch.Tensor]:
+    """
+    Create a Ridge regression mapping function.
+    
+    Fits ridge regression on (x_context, y_context) and returns a function
+    that predicts y_test from x_test.
+    
+    Args:
+        x_context: Context x values (K, D)
+        y_context: Context y values (K,)
+        cfg: Configuration object
+        reg_lambda: Regularization parameter (default: cfg.sigma2)
+    
+    Returns:
+        Function that takes x_test (D,) and returns desired y_test (scalar tensor)
+    """
+    D = cfg.D
+    K = x_context.shape[0]
+    
+    # Compute lambda from config if not provided
+    if reg_lambda is None:
+        reg_lambda = cfg.sigma2
+    
+    # Fit ridge regression on context
+    # X^T X + lambda * I
+    XT_X = x_context.T @ x_context  # (D, D)
+    XT_Y = x_context.T @ y_context.unsqueeze(-1)  # (D, 1)
+    
+    # Add regularization
+    lambda_eye = reg_lambda * torch.eye(D, device=x_context.device, dtype=x_context.dtype)
+    ridge_matrix = XT_X + lambda_eye  # (D, D)
+    
+    # Solve for theta
+    try:
+        theta_ridge = torch.linalg.solve(ridge_matrix, XT_Y)  # (D, 1)
+    except Exception as e:
+        print(f"[DEBUG] Error in torch.linalg.solve: {e}")
+        print(f"[DEBUG] ridge_matrix shape: {ridge_matrix.shape}, XT_Y shape: {XT_Y.shape}")
+        print(f"[DEBUG] ridge_matrix has NaN: {torch.isnan(ridge_matrix).any()}")
+        print(f"[DEBUG] XT_Y has NaN: {torch.isnan(XT_Y).any()}")
+        raise
+    
+    # Return mapping function
+    def mapping_fn(x_test: torch.Tensor) -> torch.Tensor:
+        """
+        Predict y_test from x_test using fitted ridge regression.
+        
+        Args:
+            x_test: Query x value (D,)
+        
+        Returns:
+            Predicted y_test (scalar tensor)
+        """
+        # x_test @ theta_ridge: (D,) @ (D, 1) -> (1,)
+        y_pred = (x_test @ theta_ridge).squeeze()
+        return y_pred
+    
+    return mapping_fn
+
+
+def create_dmmse_mapping(
+    x_context: torch.Tensor,  # (K, D)
+    y_context: torch.Tensor,  # (K,)
+    tasks: torch.Tensor,      # (M, D)
+    cfg: ICRegConfig,
+) -> Callable[[torch.Tensor], torch.Tensor]:
+    """
+    Create a dMMSE mapping function.
+    
+    Uses Bayesian posterior over M tasks to predict y_test from x_test.
+    
+    Args:
+        x_context: Context x values (K, D)
+        y_context: Context y values (K,)
+        tasks: M discrete tasks (M, D)
+        cfg: Configuration object
+    
+    Returns:
+        Function that takes x_test (D,) and returns desired y_test (scalar tensor)
+    """
+    sigma2 = cfg.sigma2
+    
+    # Move tasks to same device as context
+    tasks = tasks.to(x_context.device)
+    
+    # Return mapping function
+    def mapping_fn(x_test: torch.Tensor) -> torch.Tensor:
+        """
+        Predict y_test from x_test using dMMSE.
+        
+        Args:
+            x_test: Query x value (D,)
+        
+        Returns:
+            Predicted y_test (scalar tensor)
+        """
+        # predict_dmmse expects batched inputs
+        # x_context: (1, K, D), y_context: (1, K), x_query: (1, 1, D)
+        x_context_batched = x_context.unsqueeze(0)  # (1, K, D)
+        y_context_batched = y_context.unsqueeze(0)  # (1, K)
+        x_query_batched = x_test.unsqueeze(0).unsqueeze(0)  # (1, 1, D)
+        
+        # Get prediction
+        y_pred_batched = predict_dmmse(
+            x_context_batched,
+            y_context_batched,
+            x_query_batched,
+            tasks,
+            sigma2,
+        )  # (1,)
+        
+        return y_pred_batched.squeeze(0)  # scalar
+    
+    return mapping_fn
+
+
+def create_constant_mapping(
+    target_value: float,
+) -> Callable[[torch.Tensor], torch.Tensor]:
+    """
+    Create a constant mapping function (ignores x_test).
+    
+    Args:
+        target_value: Constant value to return
+    
+    Returns:
+        Function that always returns target_value regardless of x_test
+    """
+    def mapping_fn(x_test: torch.Tensor) -> torch.Tensor:
+        """
+        Return constant target value.
+        
+        Args:
+            x_test: Query x value (ignored)
+        
+        Returns:
+            target_value as tensor
+        """
+        # Create tensor with same device and dtype as x_test
+        return torch.tensor(
+            target_value,
+            device=x_test.device,
+            dtype=x_test.dtype,
+        )
+    
+    return mapping_fn
+
+
+def create_mapping(
+    x_context: torch.Tensor,
+    y_context: torch.Tensor,
+    mapping_type: str,  # "ridge", "dmmse", or "constant"
+    cfg: ICRegConfig,
+    target_value: Optional[float] = None,
+    tasks: Optional[torch.Tensor] = None,
+    reg_lambda: Optional[float] = None,
+) -> Callable[[torch.Tensor], torch.Tensor]:
+    """
+    Factory function to create mapping based on type.
+    
+    Args:
+        x_context: Context x values (K, D)
+        y_context: Context y values (K,)
+        mapping_type: Type of mapping - "ridge", "dmmse", or "constant"
+        cfg: Configuration object
+        target_value: Target value for constant mapping (required if mapping_type="constant")
+        tasks: Tasks for dMMSE mapping (required if mapping_type="dmmse")
+        reg_lambda: Lambda for Ridge regression (optional, uses cfg.sigma2 if None)
+    
+    Returns:
+        Mapping function: x_test -> y_desired
+    """
+    if mapping_type == "ridge":
+        return create_ridge_mapping(x_context, y_context, cfg, reg_lambda)
+    elif mapping_type == "dmmse":
+        if tasks is None:
+            raise ValueError("tasks must be provided for dMMSE mapping")
+        return create_dmmse_mapping(x_context, y_context, tasks, cfg)
+    elif mapping_type == "constant":
+        if target_value is None:
+            raise ValueError("target_value must be provided for constant mapping")
+        return create_constant_mapping(target_value)
+    else:
+        raise ValueError(f"Unknown mapping_type: {mapping_type}. Must be 'ridge', 'dmmse', or 'constant'")
+
+
 def optimize_prompt_for_checkpoint(
     checkpoint_path: str,
     n_prompt: int = 20,
-    target_value: float = 15.0,
+    n_x_test: int = 100,
+    mapping_type: str = "ridge",
+    target_value: Optional[float] = None,
     l1_penalty: float = 2.0,
     l2_penalty: float = 2.0,
     learning_rate: float = 0.1,
@@ -94,6 +290,8 @@ def optimize_prompt_for_checkpoint(
     optimize_x: bool = False,
     seed: int = 42,
     device: Optional[str] = None,
+    tasks: Optional[torch.Tensor] = None,
+    reg_lambda: Optional[float] = None,
 ) -> Dict:
     """
     Optimize prompt for a single checkpoint using elastic net regularization.
@@ -101,7 +299,9 @@ def optimize_prompt_for_checkpoint(
     Args:
         checkpoint_path: Path to checkpoint file
         n_prompt: Number of prompt examples
-        target_value: Target value for utility function
+        n_x_test: Number of x_test values to generate (default: 100)
+        mapping_type: Type of mapping - "ridge", "dmmse", or "constant" (default: "ridge")
+        target_value: Target value for constant mapping (only used if mapping_type="constant")
         l1_penalty: L1 regularization strength (sparsity)
         l2_penalty: L2 regularization strength (magnitude control)
         learning_rate: Optimization learning rate
@@ -109,6 +309,8 @@ def optimize_prompt_for_checkpoint(
         optimize_x: Whether to also optimize X values in prompt
         seed: Random seed for reproducibility
         device: Device to use (auto-detect if None)
+        tasks: Tasks for dMMSE mapping (if None and mapping_type="dmmse", recover from checkpoint M)
+        reg_lambda: Lambda for Ridge regression (if None, uses cfg.sigma2)
         
     Returns:
         Dictionary with optimization trajectory and results
@@ -133,7 +335,9 @@ def optimize_prompt_for_checkpoint(
     true_theta = torch.randn(D, 1, device=device)
     noise = 0.1 * torch.randn(n_prompt, 1, device=device)
     y_context = (x_context @ true_theta + noise).squeeze(1)  # (n_prompt,)
-    x_query = torch.randn(1, D, device=device)  # Single query point
+    
+    # Generate multiple x_test values (same distribution as x_context)
+    x_test_all = torch.randn(n_x_test, D, device=device)  # (n_x_test, D)
     
     # Store initial values
     x_context_initial = x_context.clone().detach()
@@ -144,19 +348,37 @@ def optimize_prompt_for_checkpoint(
         x_context = x_context.requires_grad_(True)
     y_context = y_context.requires_grad_(True)
     
+    # Recover tasks for dMMSE if needed
+    if mapping_type == "dmmse" and tasks is None:
+        # Recover tasks from checkpoint M value
+        if isinstance(M, int):
+            all_tasks = recover_training_tasks(max_M=32768, D=cfg.D, seed=0)
+            tasks = all_tasks[:M].to(device)  # (M, D)
+            print(f"  Recovered {M} tasks from training (max_M=32768, seed=0)")
+        else:
+            raise ValueError(f"Cannot recover tasks for dMMSE: M={M} is not an integer")
+    
     # Track trajectories
     prediction_trajectory = []
     perturbation_max_trajectory = []
     loss_trajectory = []
     
     print(f"Optimizing prompt for checkpoint: {checkpoint_path}")
-    print(f"  M={M}, step={step}, target={target_value}")
+    print(f"  M={M}, step={step}, mapping_type={mapping_type}, n_x_test={n_x_test}")
+    if mapping_type == "constant":
+        print(f"  target_value={target_value}")
     print(f"  L1={l1_penalty}, L2={l2_penalty}, LR={learning_rate}")
     print(f"  Optimizing {'X and Y' if optimize_x else 'Y only'}")
     print()
     
+    print(f"[DEBUG] Starting optimization loop: {num_steps} steps")
+    print(f"[DEBUG] Device: {device}, x_context shape: {x_context.shape}, y_context shape: {y_context.shape}")
+    print(f"[DEBUG] x_test_all shape: {x_test_all.shape}")
+    
     # Optimization loop
     for opt_step in range(num_steps):
+        if opt_step == 0:
+            print(f"[DEBUG] Step {opt_step}: Starting first optimization step...")
         # Zero gradients
         if optimize_x:
             x_context.grad = None
@@ -183,23 +405,60 @@ def optimize_prompt_for_checkpoint(
                 x_context_use = torch.cat([x_context, x_pad], dim=0)
                 y_context_use = torch.cat([y_context, y_pad], dim=0)
         
-        # Combine context and query
-        x_full = torch.cat([x_context_use, x_query], dim=0)  # (K_expected, D)
-        y_full = torch.cat([y_context_use, torch.zeros(1, device=device)], dim=0)  # (K_expected,)
+        if opt_step == 0:
+            print(f"[DEBUG] Step {opt_step}: Creating mapping function...")
         
-        # Encode to tokens
-        tokens = encode_sequence_tokens(x_full, y_full)  # (2*K_expected, D+1)
-        tokens = tokens.unsqueeze(0).to(device)  # Add batch dimension and move to device: (1, 2*K_expected, D+1)
+        # Create mapping function from z (context)
+        mapping_fn = create_mapping(
+            x_context=x_context_use,
+            y_context=y_context_use,
+            mapping_type=mapping_type,
+            cfg=cfg,
+            target_value=target_value,
+            tasks=tasks,
+            reg_lambda=reg_lambda,
+        )
         
-        # Get prediction for the query point
-        # The model predicts for all positions, we want the last one (query position)
-        y_pred_all = model.predict_y_from_x_tokens(tokens)  # (1, K_expected)
-        y_pred = y_pred_all[0, -1]  # Prediction for query point (scalar)
+        if opt_step == 0:
+            print(f"[DEBUG] Step {opt_step}: Mapping function created, computing losses over {len(x_test_all)} x_test values...")
         
-        # Loss: squared error from target
-        # We interpret y_pred as mean of Gaussian with sd=1
-        # Utility U(y) = -(y - target)^2, so we minimize (y_pred - target)^2
-        loss = (y_pred - target_value) ** 2
+        # Compute loss over all x_test values
+        losses = []
+        for i, x_test in enumerate(x_test_all):
+            if opt_step == 0 and i == 0:
+                print(f"[DEBUG] Step {opt_step}: Processing x_test {i+1}/{len(x_test_all)}...")
+            # Combine context and query
+            x_full = torch.cat([x_context_use, x_test.unsqueeze(0)], dim=0)  # (K_expected, D)
+            y_full = torch.cat([y_context_use, torch.zeros(1, device=device)], dim=0)  # (K_expected,)
+            
+            # Encode to tokens
+            tokens = encode_sequence_tokens(x_full, y_full)  # (2*K_expected, D+1)
+            tokens = tokens.unsqueeze(0).to(device)  # Add batch dimension: (1, 2*K_expected, D+1)
+            
+            if opt_step == 0 and i == 0:
+                print(f"[DEBUG] Step {opt_step}: x_test {i+1} - tokens shape: {tokens.shape}")
+            
+            # Get model prediction for the query point
+            y_pred_all = model.predict_y_from_x_tokens(tokens)  # (1, K_expected)
+            y_pred = y_pred_all[0, -1]  # Prediction for query point (scalar)
+            
+            if opt_step == 0 and i == 0:
+                print(f"[DEBUG] Step {opt_step}: x_test {i+1} - model prediction computed: {y_pred.item():.4f}")
+            
+            # Get desired value from mapping function
+            y_desired = mapping_fn(x_test)  # Scalar tensor
+            
+            # Compute squared error
+            losses.append((y_pred - y_desired) ** 2)
+            
+            if opt_step == 0 and i == 0:
+                print(f"[DEBUG] Step {opt_step}: x_test {i+1} - y_pred={y_pred.item():.4f}, y_desired={y_desired.item():.4f}, loss={losses[-1].item():.4f}")
+        
+        # Average loss over all x_test values
+        loss = torch.stack(losses).mean()
+        
+        if opt_step == 0:
+            print(f"[DEBUG] Step {opt_step}: Average loss computed: {loss.item():.4f}")
         
         # Backward pass
         loss.backward()
@@ -237,16 +496,27 @@ def optimize_prompt_for_checkpoint(
                 x_context.data -= learning_rate * (x_grad + l1_grad_x + l2_grad_x)
         
         # Track metrics
-        current_pred = y_pred.item()
+        # For tracking, use average prediction over x_test values
+        # (recompute for display purposes)
+        with torch.no_grad():
+            preds = []
+            for x_test in x_test_all:
+                x_full = torch.cat([x_context_use, x_test.unsqueeze(0)], dim=0)
+                y_full = torch.cat([y_context_use, torch.zeros(1, device=device)], dim=0)
+                tokens = encode_sequence_tokens(x_full, y_full).unsqueeze(0).to(device)
+                y_pred_all = model.predict_y_from_x_tokens(tokens)
+                preds.append(y_pred_all[0, -1].item())
+            avg_pred = np.mean(preds)
+        
         max_pert = torch.max(torch.abs(y_perturbation)).item()
         current_loss = loss.item()
         
-        prediction_trajectory.append(current_pred)
+        prediction_trajectory.append(avg_pred)
         perturbation_max_trajectory.append(max_pert)
         loss_trajectory.append(current_loss)
         
         if (opt_step + 1) % 20 == 0:
-            print(f"  Step {opt_step + 1}/{num_steps}: pred={current_pred:.4f}, "
+            print(f"  Step {opt_step + 1}/{num_steps}: avg_pred={avg_pred:.4f}, "
                   f"loss={current_loss:.4f}, max_pert={max_pert:.4f}")
     
     # Final perturbation
@@ -264,6 +534,10 @@ def optimize_prompt_for_checkpoint(
           f"max_pert={perturbation_max_trajectory[-1]:.4f}, "
           f"sparsity={sparsity_count}/{n_prompt} unchanged")
     
+    # Store X context values if optimized
+    x_context_initial_result = x_context_initial.detach().cpu().numpy()
+    x_context_final_result = x_context.detach().cpu().numpy() if optimize_x else None
+    
     return {
         "checkpoint_path": checkpoint_path,
         "M": M,
@@ -275,10 +549,14 @@ def optimize_prompt_for_checkpoint(
         "final_x_perturbation": final_x_perturbation.numpy() if final_x_perturbation is not None else None,
         "y_context_initial": y_context_initial.detach().cpu().numpy(),
         "y_context_final": y_context.detach().cpu().numpy(),
+        "x_context_initial": x_context_initial_result,
+        "x_context_final": x_context_final_result,
         "active_indices": active_indices.numpy(),
         "sparsity_count": sparsity_count,
         "target_value": target_value,
         "n_prompt": n_prompt,
+        "n_x_test": n_x_test,
+        "mapping_type": mapping_type,
     }
 
 
@@ -298,19 +576,21 @@ def plot_optimization_results(
     fig, axes = plt.subplots(2, 2, figsize=(18, 10))
     
     prediction_traj = results["prediction_trajectory"]
+    loss_traj = results["loss_trajectory"]
     pert_max_traj = results["perturbation_max_trajectory"]
     final_pert = results["final_y_perturbation"]
     active_indices = results["active_indices"]
-    target = results["target_value"]
+    target = results.get("target_value")
     n_prompt = results["n_prompt"]
+    mapping_type = results.get("mapping_type", "constant")
+    n_x_test = results.get("n_x_test", 1)
     
-    # Plot 1: Prediction Trajectory
+    # Plot 1: Average Loss Trajectory
     ax = axes[0, 0]
-    ax.plot(prediction_traj, linewidth=3, label="Prediction")
-    ax.axhline(y=target, color="r", linestyle="--", label=f"Target ({target})")
-    ax.set_title("Optimization Trajectory")
+    ax.plot(loss_traj, linewidth=3, label="Avg Loss", color="blue")
+    ax.set_title(f"Loss Trajectory (mapping={mapping_type}, n_x_test={n_x_test})")
     ax.set_xlabel("Steps")
-    ax.set_ylabel("Prediction")
+    ax.set_ylabel("Average Loss")
     ax.legend()
     ax.grid(True, alpha=0.3)
     
@@ -335,9 +615,9 @@ def plot_optimization_results(
         color=colors,
         alpha=0.8,
     )
-    ax.set_title("Perturbation Vector (Sparsity Pattern)")
+    ax.set_title("Y Perturbation Vector (Sparsity Pattern)")
     ax.set_xlabel("Prompt Index")
-    ax.set_ylabel("Change Magnitude")
+    ax.set_ylabel("Y Change Magnitude")
     ax.axhline(0, color="black", linewidth=1)
     ax.grid(True, alpha=0.3, axis="y")
     
@@ -348,20 +628,45 @@ def plot_optimization_results(
     x_pos = np.arange(n_prompt)
     width = 0.35
     
-    ax.bar(x_pos - width / 2, y_initial, width, label="Initial Y", alpha=0.7)
-    ax.bar(x_pos + width / 2, y_final, width, label="Optimized Y", alpha=0.7)
-    ax.set_title("Before vs After (Y Values)")
-    ax.set_xlabel("Prompt Index")
-    ax.set_ylabel("Y Value")
-    ax.legend()
-    ax.grid(True, alpha=0.3, axis="y")
+    # Check if X was also optimized
+    final_x_perturbation = results.get("final_x_perturbation")
+    x_context_initial = results.get("x_context_initial")
+    x_context_final = results.get("x_context_final")
+    
+    if final_x_perturbation is not None:
+        # Show both X and Y perturbations
+        # Use subplot or show X perturbation magnitude
+        x_pert_magnitude = np.linalg.norm(final_x_perturbation, axis=1) if final_x_perturbation.ndim > 1 else np.abs(final_x_perturbation)
+        y_pert_magnitude = np.abs(final_pert)
+        
+        ax.plot(range(n_prompt), x_pert_magnitude, 'o-', label="X Perturbation (L2 norm)", color="red", linewidth=2, markersize=4)
+        ax.plot(range(n_prompt), y_pert_magnitude, 's-', label="Y Perturbation (abs)", color="blue", linewidth=2, markersize=4)
+        ax.set_title("X and Y Perturbation Magnitudes")
+        ax.set_xlabel("Prompt Index")
+        ax.set_ylabel("Perturbation Magnitude")
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+    else:
+        # Only Y was optimized - show before/after Y values
+        ax.bar(x_pos - width / 2, y_initial, width, label="Initial Y", alpha=0.7)
+        ax.bar(x_pos + width / 2, y_final, width, label="Optimized Y", alpha=0.7)
+        ax.set_title("Before vs After (Y Values)")
+        ax.set_xlabel("Prompt Index")
+        ax.set_ylabel("Y Value")
+        ax.legend()
+        ax.grid(True, alpha=0.3, axis="y")
     
     # Overall title
     M = results["M"]
     step = results["step"]
+    mapping_type = results.get("mapping_type", "constant")
+    n_x_test = results.get("n_x_test", 1)
+    title_parts = [f"M={M}, Step={step}", f"mapping={mapping_type}, n_x_test={n_x_test}"]
+    if mapping_type == "constant" and target is not None:
+        title_parts.append(f"target={target}")
+    title_parts.append(f"Sparsity={results['sparsity_count']}/{n_prompt}")
     fig.suptitle(
-        f"Prompt Optimization: {checkpoint_name}\nM={M}, Step={step}, "
-        f"Target={target}, Sparsity={results['sparsity_count']}/{n_prompt}",
+        f"Prompt Optimization: {checkpoint_name}\n" + ", ".join(title_parts),
         fontsize=14,
         y=0.995,
     )
@@ -398,10 +703,29 @@ def main():
         help="Number of prompt examples (default: 20)",
     )
     parser.add_argument(
+        "--n-x-test",
+        type=int,
+        default=100,
+        help="Number of x_test values to generate (default: 100)",
+    )
+    parser.add_argument(
+        "--mapping-type",
+        type=str,
+        default="ridge",
+        choices=["ridge", "dmmse", "constant"],
+        help="Type of mapping function: 'ridge', 'dmmse', or 'constant' (default: ridge)",
+    )
+    parser.add_argument(
         "--target-value",
         type=float,
-        default=15.0,
-        help="Target value for utility function (default: 15.0)",
+        default=None,
+        help="Target value for constant mapping (only used if mapping-type=constant, default: None)",
+    )
+    parser.add_argument(
+        "--reg-lambda",
+        type=float,
+        default=None,
+        help="Lambda for Ridge regression (default: None, uses cfg.sigma2)",
     )
     parser.add_argument(
         "--l1-penalty",
@@ -482,16 +806,20 @@ def main():
     
     # Process each checkpoint
     all_results = []
+    print(f"[DEBUG] Starting to process {len(checkpoints)} checkpoints")
     for i, checkpoint_path in enumerate(checkpoints):
         print(f"\n{'='*80}")
         print(f"Processing checkpoint {i+1}/{len(checkpoints)}")
         print(f"{'='*80}")
+        print(f"[DEBUG] Checkpoint path: {checkpoint_path}")
         
         try:
             # Optimize prompt
             results = optimize_prompt_for_checkpoint(
                 checkpoint_path=checkpoint_path,
                 n_prompt=args.n_prompt,
+                n_x_test=args.n_x_test,
+                mapping_type=args.mapping_type,
                 target_value=args.target_value,
                 l1_penalty=args.l1_penalty,
                 l2_penalty=args.l2_penalty,
@@ -500,6 +828,7 @@ def main():
                 optimize_x=args.optimize_x,
                 seed=args.seed,
                 device=args.device,
+                reg_lambda=args.reg_lambda,
             )
             
             # Generate checkpoint name for plot
@@ -533,7 +862,10 @@ def main():
             "num_checkpoints": len(all_results),
             "config": {
                 "n_prompt": args.n_prompt,
+                "n_x_test": args.n_x_test,
+                "mapping_type": args.mapping_type,
                 "target_value": args.target_value,
+                "reg_lambda": args.reg_lambda,
                 "l1_penalty": args.l1_penalty,
                 "l2_penalty": args.l2_penalty,
                 "learning_rate": args.learning_rate,
