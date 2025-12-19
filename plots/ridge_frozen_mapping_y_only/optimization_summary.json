@@ -1,0 +1,153 @@
+{
+  "num_checkpoints": 15,
+  "config": {
+    "n_prompt": 20,
+    "n_x_test": 100,
+    "mapping_type": "ridge",
+    "target_value": null,
+    "reg_lambda": null,
+    "l1_penalty": 2.0,
+    "l2_penalty": 2.0,
+    "learning_rate": 0.1,
+    "num_steps": 200,
+    "optimize_x": false,
+    "seed": 42
+  },
+  "results": [
+    {
+      "checkpoint_path": "checkpoints/checkpoints_M2/checkpoint_final.pt",
+      "M": 2,
+      "step": 34000,
+      "final_prediction": 0.1879947930574417,
+      "final_loss": 10.337419509887695,
+      "max_perturbation": 0.13350462913513184,
+      "sparsity_count": 20
+    },
+    {
+      "checkpoint_path": "checkpoints/checkpoints_M4/checkpoint_final.pt",
+      "M": 4,
+      "step": 22000,
+      "final_prediction": 0.033190783113241196,
+      "final_loss": 6.511970043182373,
+      "max_perturbation": 0.24747693538665771,
+      "sparsity_count": 20
+    },
+    {
+      "checkpoint_path": "checkpoints/checkpoints_M8/checkpoint_final.pt",
+      "M": 8,
+      "step": 32000,
+      "final_prediction": 0.049990300089120865,
+      "final_loss": 2.327803611755371,
+      "max_perturbation": 0.20779144763946533,
+      "sparsity_count": 20
+    },
+    {
+      "checkpoint_path": "checkpoints/checkpoints_M16/checkpoint_final.pt",
+      "M": 16,
+      "step": 37000,
+      "final_prediction": 0.16998149454593658,
+      "final_loss": 2.4686436653137207,
+      "max_perturbation": 0.2209240198135376,
+      "sparsity_count": 20
+    },
+    {
+      "checkpoint_path": "checkpoints/checkpoints_M32/checkpoint_final.pt",
+      "M": 32,
+      "step": 32000,
+      "final_prediction": -0.2053990513086319,
+      "final_loss": 1.8565958738327026,
+      "max_perturbation": 0.14120376110076904,
+      "sparsity_count": 20
+    },
+    {
+      "checkpoint_path": "checkpoints/checkpoints_M64/checkpoint_final.pt",
+      "M": 64,
+      "step": 70000,
+      "final_prediction": 0.2178138643503189,
+      "final_loss": 1.4535794258117676,
+      "max_perturbation": 0.1631094217300415,
+      "sparsity_count": 20
+    },
+    {
+      "checkpoint_path": "checkpoints/checkpoints_M128/checkpoint_final.pt",
+      "M": 128,
+      "step": 63000,
+      "final_prediction": 0.15052609145641327,
+      "final_loss": 1.3900140523910522,
+      "max_perturbation": 0.18942177295684814,
+      "sparsity_count": 20
+    },
+    {
+      "checkpoint_path": "checkpoints/checkpoints_M256/checkpoint_final.pt",
+      "M": 256,
+      "step": 150000,
+      "final_prediction": 0.18529832363128662,
+      "final_loss": 0.265424907207489,
+      "max_perturbation": 0.19094181060791016,
+      "sparsity_count": 20
+    },
+    {
+      "checkpoint_path": "checkpoints/checkpoints_M512/checkpoint_final.pt",
+      "M": 512,
+      "step": 86000,
+      "final_prediction": 0.11789357662200928,
+      "final_loss": 0.03823789209127426,
+      "max_perturbation": 0.12511754035949707,
+      "sparsity_count": 20
+    },
+    {
+      "checkpoint_path": "checkpoints/checkpoints_M1024/checkpoint_final.pt",
+      "M": 1024,
+      "step": 98000,
+      "final_prediction": 0.0699264332652092,
+      "final_loss": 0.02215222269296646,
+      "max_perturbation": 0.15459692478179932,
+      "sparsity_count": 20
+    },
+    {
+      "checkpoint_path": "checkpoints/checkpoints_M2048/checkpoint_final.pt",
+      "M": 2048,
+      "step": 35000,
+      "final_prediction": 0.19349871575832367,
+      "final_loss": 0.05625104159116745,
+      "max_perturbation": 0.1362106204032898,
+      "sparsity_count": 20
+    },
+    {
+      "checkpoint_path": "checkpoints/checkpoints_M4096/checkpoint_final.pt",
+      "M": 4096,
+      "step": 34000,
+      "final_prediction": 0.14938335120677948,
+      "final_loss": 0.03841552510857582,
+      "max_perturbation": 0.12420600652694702,
+      "sparsity_count": 20
+    },
+    {
+      "checkpoint_path": "checkpoints/checkpoints_M8192/checkpoint_final.pt",
+      "M": 8192,
+      "step": 52000,
+      "final_prediction": 0.19048121571540833,
+      "final_loss": 0.062005918473005295,
+      "max_perturbation": 0.12356817722320557,
+      "sparsity_count": 20
+    },
+    {
+      "checkpoint_path": "checkpoints/checkpoints_M16384/checkpoint_final.pt",
+      "M": 16384,
+      "step": 49000,
+      "final_prediction": 0.14662684500217438,
+      "final_loss": 0.04205990582704544,
+      "max_perturbation": 0.1170569658279419,
+      "sparsity_count": 20
+    },
+    {
+      "checkpoint_path": "checkpoints/checkpoints_M32768/checkpoint_final.pt",
+      "M": 32768,
+      "step": 41000,
+      "final_prediction": 0.1556130349636078,
+      "final_loss": 0.059736210852861404,
+      "max_perturbation": 0.1227184534072876,
+      "sparsity_count": 20
+    }
+  ]
+}

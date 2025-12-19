@@ -336,8 +336,7 @@ def optimize_prompt_for_checkpoint(
     noise = 0.1 * torch.randn(n_prompt, 1, device=device)
     y_context = (x_context @ true_theta + noise).squeeze(1)  # (n_prompt,)
     
-    # Generate multiple x_test values (same distribution as x_context)
-    x_test_all = torch.randn(n_x_test, D, device=device)  # (n_x_test, D)
+    # Note: x_test values will be sampled fresh at each gradient step
     
     # Store initial values
     x_context_initial = x_context.clone().detach()
@@ -373,7 +372,42 @@ def optimize_prompt_for_checkpoint(
     
     print(f"[DEBUG] Starting optimization loop: {num_steps} steps")
     print(f"[DEBUG] Device: {device}, x_context shape: {x_context.shape}, y_context shape: {y_context.shape}")
-    print(f"[DEBUG] x_test_all shape: {x_test_all.shape}")
+    print(f"[DEBUG] Will sample {n_x_test} fresh x_test values at each step")
+    
+    # Encode tokens: we need to handle the model's expected K value
+    # The model expects exactly cfg.K examples, so we may need to pad/truncate
+    K_expected = cfg.K
+    K_context = n_prompt
+    
+    if K_context + 1 > K_expected:
+        # Truncate: use first K_expected - 1 context examples + 1 query
+        K_context_use = K_expected - 1
+        x_context_use_initial = x_context_initial[:K_context_use]
+        y_context_use_initial = y_context_initial[:K_context_use]
+    else:
+        # Pad with zeros to reach K_expected
+        K_pad = K_expected - K_context - 1
+        x_context_use_initial = x_context_initial
+        y_context_use_initial = y_context_initial
+        if K_pad > 0:
+            x_pad = torch.zeros(K_pad, D, device=device)
+            y_pad = torch.zeros(K_pad, device=device)
+            x_context_use_initial = torch.cat([x_context_initial, x_pad], dim=0)
+            y_context_use_initial = torch.cat([y_context_initial, y_pad], dim=0)
+    
+    # Create mapping function ONCE at the start using initial context values
+    # This keeps the target fixed throughout optimization (prevents moving target problem)
+    print(f"[DEBUG] Creating frozen mapping function from initial context...")
+    mapping_fn = create_mapping(
+        x_context=x_context_use_initial,
+        y_context=y_context_use_initial,
+        mapping_type=mapping_type,
+        cfg=cfg,
+        target_value=target_value,
+        tasks=tasks,
+        reg_lambda=reg_lambda,
+    )
+    print(f"[DEBUG] Mapping function frozen - will remain fixed throughout optimization")
     
     # Optimization loop
     for opt_step in range(num_steps):
@@ -384,18 +418,12 @@ def optimize_prompt_for_checkpoint(
             x_context.grad = None
         y_context.grad = None
         
-        # Encode tokens: we need to handle the model's expected K value
-        # The model expects exactly cfg.K examples, so we may need to pad/truncate
-        K_expected = cfg.K
-        K_context = n_prompt
-        
+        # Use the same padding/truncation logic for consistency
         if K_context + 1 > K_expected:
-            # Truncate: use first K_expected - 1 context examples + 1 query
             K_context_use = K_expected - 1
             x_context_use = x_context[:K_context_use]
             y_context_use = y_context[:K_context_use]
         else:
-            # Pad with zeros to reach K_expected
             K_pad = K_expected - K_context - 1
             x_context_use = x_context
             y_context_use = y_context
@@ -405,57 +433,58 @@ def optimize_prompt_for_checkpoint(
                 x_context_use = torch.cat([x_context, x_pad], dim=0)
                 y_context_use = torch.cat([y_context, y_pad], dim=0)
         
-        if opt_step == 0:
-            print(f"[DEBUG] Step {opt_step}: Creating mapping function...")
-        
-        # Create mapping function from z (context)
-        mapping_fn = create_mapping(
-            x_context=x_context_use,
-            y_context=y_context_use,
-            mapping_type=mapping_type,
-            cfg=cfg,
-            target_value=target_value,
-            tasks=tasks,
-            reg_lambda=reg_lambda,
-        )
+        # Sample fresh x_test values at each gradient step
+        x_test_all = torch.randn(n_x_test, D, device=device)  # (n_x_test, D)
         
         if opt_step == 0:
-            print(f"[DEBUG] Step {opt_step}: Mapping function created, computing losses over {len(x_test_all)} x_test values...")
+            print(f"[DEBUG] Step {opt_step}: Computing losses over {n_x_test} fresh x_test values (batched) using frozen mapping function...")
         
-        # Compute loss over all x_test values
-        losses = []
-        for i, x_test in enumerate(x_test_all):
-            if opt_step == 0 and i == 0:
-                print(f"[DEBUG] Step {opt_step}: Processing x_test {i+1}/{len(x_test_all)}...")
-            # Combine context and query
-            x_full = torch.cat([x_context_use, x_test.unsqueeze(0)], dim=0)  # (K_expected, D)
-            y_full = torch.cat([y_context_use, torch.zeros(1, device=device)], dim=0)  # (K_expected,)
-            
-            # Encode to tokens
-            tokens = encode_sequence_tokens(x_full, y_full)  # (2*K_expected, D+1)
-            tokens = tokens.unsqueeze(0).to(device)  # Add batch dimension: (1, 2*K_expected, D+1)
-            
-            if opt_step == 0 and i == 0:
-                print(f"[DEBUG] Step {opt_step}: x_test {i+1} - tokens shape: {tokens.shape}")
-            
-            # Get model prediction for the query point
-            y_pred_all = model.predict_y_from_x_tokens(tokens)  # (1, K_expected)
-            y_pred = y_pred_all[0, -1]  # Prediction for query point (scalar)
-            
-            if opt_step == 0 and i == 0:
-                print(f"[DEBUG] Step {opt_step}: x_test {i+1} - model prediction computed: {y_pred.item():.4f}")
-            
-            # Get desired value from mapping function
-            y_desired = mapping_fn(x_test)  # Scalar tensor
-            
-            # Compute squared error
-            losses.append((y_pred - y_desired) ** 2)
-            
-            if opt_step == 0 and i == 0:
-                print(f"[DEBUG] Step {opt_step}: x_test {i+1} - y_pred={y_pred.item():.4f}, y_desired={y_desired.item():.4f}, loss={losses[-1].item():.4f}")
+        # Batch process all x_test values in parallel for efficiency
+        # Note: mapping_fn is frozen (created once at start), so y_desired is stable
+        # Note: x_test_all is sampled fresh at each step for better generalization
+        
+        # Prepare batched inputs: (n_x_test, K_expected, D)
+        # Each row is [x_context_use, x_test[i]]
+        x_context_expanded = x_context_use.unsqueeze(0).expand(n_x_test, -1, -1)  # (n_x_test, K_context_use, D)
+        x_query_expanded = x_test_all.unsqueeze(1)  # (n_x_test, 1, D)
+        x_full_batch = torch.cat([x_context_expanded, x_query_expanded], dim=1)  # (n_x_test, K_expected, D)
+        
+        # Prepare batched y: (n_x_test, K_expected)
+        y_context_expanded = y_context_use.unsqueeze(0).expand(n_x_test, -1)  # (n_x_test, K_context_use)
+        y_query_zeros = torch.zeros(n_x_test, 1, device=device)  # (n_x_test, 1)
+        y_full_batch = torch.cat([y_context_expanded, y_query_zeros], dim=1)  # (n_x_test, K_expected)
+        
+        # Encode all sequences to tokens: (n_x_test, 2*K_expected, D+1)
+        # We need to encode each sequence separately since encode_sequence_tokens doesn't batch
+        tokens_batch = []
+        for i in range(n_x_test):
+            tokens_i = encode_sequence_tokens(x_full_batch[i], y_full_batch[i])  # (2*K_expected, D+1)
+            tokens_batch.append(tokens_i)
+        tokens_batch = torch.stack(tokens_batch, dim=0).to(device)  # (n_x_test, 2*K_expected, D+1)
+        
+        if opt_step == 0:
+            print(f"[DEBUG] Step {opt_step}: Batched tokens shape: {tokens_batch.shape}")
+        
+        # Get model predictions for all queries in one forward pass
+        y_pred_all_batch = model.predict_y_from_x_tokens(tokens_batch)  # (n_x_test, K_expected)
+        y_pred_batch = y_pred_all_batch[:, -1]  # Predictions for query points: (n_x_test,)
+        
+        if opt_step == 0:
+            print(f"[DEBUG] Step {opt_step}: Batch predictions shape: {y_pred_batch.shape}, first pred: {y_pred_batch[0].item():.4f}")
+        
+        # Get desired values from mapping function for all x_test
+        # Note: mapping_fn returns scalar, so we need to call it for each x_test
+        # But we can vectorize this if the mapping function supports it
+        y_desired_batch = torch.stack([mapping_fn(x_test_all[i]) for i in range(n_x_test)])  # (n_x_test,)
+        
+        if opt_step == 0:
+            print(f"[DEBUG] Step {opt_step}: First y_desired: {y_desired_batch[0].item():.4f}")
+        
+        # Compute squared errors for all x_test values
+        losses_batch = (y_pred_batch - y_desired_batch) ** 2  # (n_x_test,)
         
         # Average loss over all x_test values
-        loss = torch.stack(losses).mean()
+        loss = losses_batch.mean()
         
         if opt_step == 0:
             print(f"[DEBUG] Step {opt_step}: Average loss computed: {loss.item():.4f}")
@@ -496,17 +525,9 @@ def optimize_prompt_for_checkpoint(
                 x_context.data -= learning_rate * (x_grad + l1_grad_x + l2_grad_x)
         
         # Track metrics
-        # For tracking, use average prediction over x_test values
-        # (recompute for display purposes)
+        # Use the batched predictions we already computed
         with torch.no_grad():
-            preds = []
-            for x_test in x_test_all:
-                x_full = torch.cat([x_context_use, x_test.unsqueeze(0)], dim=0)
-                y_full = torch.cat([y_context_use, torch.zeros(1, device=device)], dim=0)
-                tokens = encode_sequence_tokens(x_full, y_full).unsqueeze(0).to(device)
-                y_pred_all = model.predict_y_from_x_tokens(tokens)
-                preds.append(y_pred_all[0, -1].item())
-            avg_pred = np.mean(preds)
+            avg_pred = y_pred_batch.mean().item()
         
         max_pert = torch.max(torch.abs(y_perturbation)).item()
         current_loss = loss.item()
@@ -585,17 +606,12 @@ def plot_optimization_results(
     mapping_type = results.get("mapping_type", "constant")
     n_x_test = results.get("n_x_test", 1)
     
-    # Plot 1: Model Output (Prediction) Trajectory
+    # Plot 1: Average Loss Trajectory
     ax = axes[0, 0]
-    ax.plot(prediction_traj, linewidth=3, label="Model Output", color="blue")
-    if mapping_type == "constant" and target is not None:
-        try:
-            ax.axhline(y=float(target), color="r", linestyle="--", label=f"Target ({target})")
-        except (TypeError, ValueError):
-            pass  # Skip if target is not a valid number
-    ax.set_title(f"Model Output Trajectory (mapping={mapping_type}, n_x_test={n_x_test})")
+    ax.plot(loss_traj, linewidth=3, label="Avg Loss", color="blue")
+    ax.set_title(f"Loss Trajectory (mapping={mapping_type}, n_x_test={n_x_test})")
     ax.set_xlabel("Steps")
-    ax.set_ylabel("Average Model Output")
+    ax.set_ylabel("Average Loss")
     ax.legend()
     ax.grid(True, alpha=0.3)
     
