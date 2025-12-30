@@ -185,86 +185,26 @@ def check_rsync_available() -> bool:
         return False
 
 
-def download_checkpoints(
-    remote_host: str = "vast-gpu",
-    remote_path: str = "/root/icr/checkpoints/",
-    local_path: str = "~/icr_checkpoints",
+def download_single_checkpoint_folder(
+    remote_host: str,
+    remote_path: str,
+    local_path: str,
+    ssh_config: Dict[str, Optional[str]],
     dry_run: bool = False,
     use_checksum: bool = False,
-) -> None:
+) -> tuple[int, int, int]:
     """
-    Download all checkpoints from remote server to local machine.
+    Download a single checkpoint folder using rsync.
     
-    **Automatic Skip Logic**: rsync automatically skips files that already exist 
-    locally with the same size and modification time. Files are only downloaded if:
-    - They don't exist locally, OR
-    - They differ in size or modification time from the remote version
-    
-    This means you can safely run this script multiple times - it will only download
-    new or changed files, making it efficient for incremental updates.
-    
-    Args:
-        remote_host: SSH host alias to look up in SSH config
-        remote_path: Remote checkpoint directory path
-        local_path: Local download directory path
-        dry_run: If True, show what would be downloaded without downloading
-        use_checksum: If True, use checksum comparison instead of size/mtime (slower but more thorough)
+    Returns:
+        Tuple of (files_transferred, files_skipped, bytes_transferred)
     """
-    print(f"Downloading checkpoints from {remote_host}...")
-    print(f"  Remote path: {remote_path}")
-    print(f"  Local path: {local_path}")
-    print()
-    print("Skip logic: Files that already exist locally with the same size and")
-    print("  modification time will be automatically skipped (not re-downloaded).")
-    if use_checksum:
-        print(f"  Checksum mode: Enabled (compares file checksums instead of size/mtime)")
-        print("  This is slower but verifies file integrity more thoroughly.")
-    else:
-        print("  Comparison method: Size and modification time (fast)")
-    if dry_run:
-        print("  Mode: DRY RUN (no files will be downloaded)")
-    print()
-    
-    # Check if rsync is available
-    if not check_rsync_available():
-        print("ERROR: rsync is not available on this system.")
-        print("Please install rsync (usually pre-installed on macOS/Linux)")
-        sys.exit(1)
-    
-    # Parse SSH config
-    try:
-        print(f"Parsing SSH config for host '{remote_host}'...")
-        ssh_config = parse_ssh_config(remote_host)
-        print(f"  HostName: {ssh_config['HostName']}")
-        if ssh_config["Port"]:
-            print(f"  Port: {ssh_config['Port']}")
-        if ssh_config["User"]:
-            print(f"  User: {ssh_config['User']}")
-        if ssh_config["IdentityFile"]:
-            print(f"  IdentityFile: {ssh_config['IdentityFile']}")
-        print()
-    except Exception as e:
-        print(f"ERROR: Failed to parse SSH config: {e}")
-        sys.exit(1)
-    
-    # Expand local path
-    local_path_expanded = os.path.expanduser(local_path)
-    local_path_obj = Path(local_path_expanded)
-    
-    # Create local directory if it doesn't exist
-    if not dry_run:
-        local_path_obj.mkdir(parents=True, exist_ok=True)
-        print(f"Local directory: {local_path_expanded}")
-    else:
-        print(f"Local directory (would be created): {local_path_expanded}")
-    print()
-    
     # Build rsync command
     try:
         rsync_cmd = build_rsync_command(
             remote_host=remote_host,
             remote_path=remote_path,
-            local_path=local_path_expanded,
+            local_path=local_path,
             ssh_config=ssh_config,
             dry_run=dry_run,
             use_checksum=use_checksum,
@@ -344,30 +284,12 @@ def download_checkpoints(
         
         process.wait()
         
-        if process.returncode == 0:
-            print()
-            if dry_run:
-                print("✓ Dry run completed successfully")
-            else:
-                print()
-                print("✓ Download completed successfully")
-                print()
-                print("Summary:")
-                if files_skipped > 0:
-                    print(f"  ✓ Files skipped (already up-to-date): {files_skipped}")
-                if files_transferred > 0:
-                    print(f"  ↓ Files transferred: {files_transferred}")
-                    if bytes_transferred > 0:
-                        if bytes_transferred > 1024 * 1024:
-                            print(f"  ↓ Data transferred: {bytes_transferred / (1024*1024):.2f} MB")
-                        else:
-                            print(f"  ↓ Data transferred: {bytes_transferred / 1024:.2f} kB")
-                if files_transferred == 0 and files_skipped == 0:
-                    print("  (No files found or processed)")
-        else:
+        if process.returncode != 0:
             print()
             print(f"ERROR: rsync failed with exit code {process.returncode}")
             sys.exit(process.returncode)
+        
+        return (files_transferred, files_skipped, bytes_transferred)
             
     except KeyboardInterrupt:
         print()
@@ -378,11 +300,162 @@ def download_checkpoints(
         sys.exit(1)
 
 
+def download_checkpoints(
+    remote_host: str = "vast-gpu",
+    remote_paths: list[str] = None,
+    local_path: str = "~/icr_checkpoints",
+    dry_run: bool = False,
+    use_checksum: bool = False,
+) -> None:
+    """
+    Download all checkpoints from remote server to local machine.
+    
+    **Automatic Skip Logic**: rsync automatically skips files that already exist 
+    locally with the same size and modification time. Files are only downloaded if:
+    - They don't exist locally, OR
+    - They differ in size or modification time from the remote version
+    
+    This means you can safely run this script multiple times - it will only download
+    new or changed files, making it efficient for incremental updates.
+    
+    Args:
+        remote_host: SSH host alias to look up in SSH config
+        remote_paths: List of remote checkpoint directory paths. If None, defaults to
+                     both /root/icr/checkpoints/ and /root/icr/checkpoints_v2/
+        local_path: Local download directory path
+        dry_run: If True, show what would be downloaded without downloading
+        use_checksum: If True, use checksum comparison instead of size/mtime (slower but more thorough)
+    """
+    # Default to both checkpoints folders if not specified
+    if remote_paths is None:
+        remote_paths = ["/root/icr/checkpoints/", "/root/icr/checkpoints_v2/"]
+    
+    print(f"Downloading checkpoints from {remote_host}...")
+    print(f"  Remote paths: {', '.join(remote_paths)}")
+    print(f"  Local path: {local_path}")
+    print()
+    print("Skip logic: Files that already exist locally with the same size and")
+    print("  modification time will be automatically skipped (not re-downloaded).")
+    if use_checksum:
+        print(f"  Checksum mode: Enabled (compares file checksums instead of size/mtime)")
+        print("  This is slower but verifies file integrity more thoroughly.")
+    else:
+        print("  Comparison method: Size and modification time (fast)")
+    if dry_run:
+        print("  Mode: DRY RUN (no files will be downloaded)")
+    print()
+    
+    # Check if rsync is available
+    if not check_rsync_available():
+        print("ERROR: rsync is not available on this system.")
+        print("Please install rsync (usually pre-installed on macOS/Linux)")
+        sys.exit(1)
+    
+    # Parse SSH config
+    try:
+        print(f"Parsing SSH config for host '{remote_host}'...")
+        ssh_config = parse_ssh_config(remote_host)
+        print(f"  HostName: {ssh_config['HostName']}")
+        if ssh_config["Port"]:
+            print(f"  Port: {ssh_config['Port']}")
+        if ssh_config["User"]:
+            print(f"  User: {ssh_config['User']}")
+        if ssh_config["IdentityFile"]:
+            print(f"  IdentityFile: {ssh_config['IdentityFile']}")
+        print()
+    except Exception as e:
+        print(f"ERROR: Failed to parse SSH config: {e}")
+        sys.exit(1)
+    
+    # Expand local path
+    local_path_expanded = os.path.expanduser(local_path)
+    local_path_obj = Path(local_path_expanded)
+    
+    # Create local directory if it doesn't exist
+    if not dry_run:
+        local_path_obj.mkdir(parents=True, exist_ok=True)
+        print(f"Local directory: {local_path_expanded}")
+    else:
+        print(f"Local directory (would be created): {local_path_expanded}")
+    print()
+    
+    # Track total statistics across all folders
+    total_files_transferred = 0
+    total_files_skipped = 0
+    total_bytes_transferred = 0
+    
+    # Download each checkpoint folder
+    for i, remote_path in enumerate(remote_paths, 1):
+        print("=" * 80)
+        print(f"Downloading folder {i}/{len(remote_paths)}: {remote_path}")
+        print("=" * 80)
+        print()
+        
+        # Extract folder name from remote path (e.g., "checkpoints" or "checkpoints_v2")
+        # Remove trailing slashes and get the last component
+        remote_path_clean = remote_path.rstrip("/")
+        folder_name = os.path.basename(remote_path_clean)
+        
+        # Create local path for this specific folder
+        local_folder_path = os.path.join(local_path_expanded, folder_name)
+        
+        print(f"  Remote: {remote_path}")
+        print(f"  Local:  {local_folder_path}")
+        print()
+        
+        # Download this folder
+        files_transferred, files_skipped, bytes_transferred = download_single_checkpoint_folder(
+            remote_host=remote_host,
+            remote_path=remote_path,
+            local_path=local_folder_path,
+            ssh_config=ssh_config,
+            dry_run=dry_run,
+            use_checksum=use_checksum,
+        )
+        
+        # Accumulate statistics
+        total_files_transferred += files_transferred
+        total_files_skipped += files_skipped
+        total_bytes_transferred += bytes_transferred
+        
+        print()
+        if dry_run:
+            print(f"✓ Dry run completed for {remote_path}")
+        else:
+            print(f"✓ Download completed for {remote_path}")
+        print()
+    
+    # Print final summary
+    print("=" * 80)
+    print("FINAL SUMMARY")
+    print("=" * 80)
+    print()
+    if dry_run:
+        print("✓ Dry run completed successfully for all folders")
+    else:
+        print("✓ Download completed successfully for all folders")
+        print()
+        print("Total Summary:")
+        if total_files_skipped > 0:
+            print(f"  ✓ Files skipped (already up-to-date): {total_files_skipped}")
+        if total_files_transferred > 0:
+            print(f"  ↓ Files transferred: {total_files_transferred}")
+            if total_bytes_transferred > 0:
+                if total_bytes_transferred > 1024 * 1024:
+                    print(f"  ↓ Data transferred: {total_bytes_transferred / (1024*1024):.2f} MB")
+                else:
+                    print(f"  ↓ Data transferred: {total_bytes_transferred / 1024:.2f} kB")
+        if total_files_transferred == 0 and total_files_skipped == 0:
+            print("  (No files found or processed)")
+    print()
+
+
 def main():
     """Main entry point."""
     parser = argparse.ArgumentParser(
         description="Download all checkpoints from remote server to local machine. "
-                    "Uses rsync and parses SSH config automatically."
+                    "Uses rsync and parses SSH config automatically. "
+                    "By default, downloads both checkpoints/ and checkpoints_v2/ folders."
     )
     parser.add_argument(
         "--remote-host",
@@ -393,8 +466,9 @@ def main():
     parser.add_argument(
         "--remote-path",
         type=str,
-        default="/root/icr/checkpoints/",
-        help="Remote checkpoint directory path (default: /root/icr/checkpoints/)",
+        action="append",
+        help="Remote checkpoint directory path (can be specified multiple times). "
+             "If not specified, defaults to both /root/icr/checkpoints/ and /root/icr/checkpoints_v2/",
     )
     parser.add_argument(
         "--local-path",
@@ -415,9 +489,12 @@ def main():
     
     args = parser.parse_args()
     
+    # If no remote paths specified, use None to trigger default behavior
+    remote_paths = args.remote_path if args.remote_path else None
+    
     download_checkpoints(
         remote_host=args.remote_host,
-        remote_path=args.remote_path,
+        remote_paths=remote_paths,
         local_path=args.local_path,
         dry_run=args.dry_run,
         use_checksum=args.checksum,
