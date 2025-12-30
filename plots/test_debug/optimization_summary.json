@@ -1,0 +1,36 @@
+{
+  "num_checkpoints": 2,
+  "config": {
+    "n_prompt": 20,
+    "n_x_test": 100,
+    "mapping_type": "constant",
+    "target_value": 15.0,
+    "reg_lambda": null,
+    "l1_penalty": 2.0,
+    "l2_penalty": 2.0,
+    "learning_rate": 0.1,
+    "num_steps": 100,
+    "optimize_x": false,
+    "seed": 42
+  },
+  "results": [
+    {
+      "checkpoint_path": "checkpoints/checkpoints_M2/checkpoint_final.pt",
+      "M": 2,
+      "step": 34000,
+      "final_prediction": -0.23349708318710327,
+      "final_loss": 236.06069946289062,
+      "max_perturbation": 0.28735899925231934,
+      "sparsity_count": 20
+    },
+    {
+      "checkpoint_path": "checkpoints/checkpoints_M4/checkpoint_final.pt",
+      "M": 4,
+      "step": 22000,
+      "final_prediction": -0.1785348802804947,
+      "final_loss": 233.22702026367188,
+      "max_perturbation": 0.22301244735717773,
+      "sparsity_count": 20
+    }
+  ]
+}

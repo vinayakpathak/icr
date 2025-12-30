@@ -317,6 +317,10 @@ def optimize_prompt_for_checkpoint(
     """
     torch.manual_seed(seed)
     
+    # For constant mapping, use n_x_test=1 to show actual model prediction
+    if mapping_type == "constant":
+        n_x_test = 1
+    
     # Load checkpoint
     model, _, _, step, cfg, M = load_checkpoint(checkpoint_path, device=device)
     if device is None:
@@ -324,6 +328,10 @@ def optimize_prompt_for_checkpoint(
     
     model.to(device)
     model.eval()  # Set to eval mode, but we'll enable gradients for prompt values
+    
+    # Debug: Print a hash of model parameters to verify different models are loaded
+    first_param_hash = hash(tuple(list(model.parameters())[0].flatten().cpu().detach().numpy().flat[:10]))
+    print(f"[DEBUG] Model parameter hash (first 10 values): {first_param_hash}")
     
     # Freeze model parameters (we only want gradients w.r.t. prompt)
     for param in model.parameters():
@@ -409,6 +417,41 @@ def optimize_prompt_for_checkpoint(
     )
     print(f"[DEBUG] Mapping function frozen - will remain fixed throughout optimization")
     
+    # For constant mapping, sample x_test once and reuse it for all steps
+    # For other mappings, sample fresh x_test at each step
+    if mapping_type == "constant":
+        x_test_fixed = torch.randn(n_x_test, D, device=device)  # (n_x_test, D)
+        print(f"[DEBUG] Sampled x_test once (will be reused for all steps): shape {x_test_fixed.shape}")
+    else:
+        x_test_fixed = None
+        print(f"[DEBUG] Will sample fresh x_test at each step")
+    
+    # Debug: Check initial model prediction before optimization
+    with torch.no_grad():
+        # Create a test sequence with initial context
+        if K_context + 1 > K_expected:
+            K_context_use = K_expected - 1
+            x_test_debug = x_context_initial[:K_context_use]
+            y_test_debug = y_context_initial[:K_context_use]
+        else:
+            K_pad = K_expected - K_context - 1
+            x_test_debug = x_context_initial
+            y_test_debug = y_context_initial
+            if K_pad > 0:
+                x_pad = torch.zeros(K_pad, D, device=device)
+                y_pad = torch.zeros(K_pad, device=device)
+                x_test_debug = torch.cat([x_context_initial, x_pad], dim=0)
+                y_test_debug = torch.cat([y_context_initial, y_pad], dim=0)
+        
+        # Add a dummy query
+        x_query_debug = torch.randn(1, D, device=device)
+        y_query_debug = torch.zeros(1, device=device)
+        x_full_debug = torch.cat([x_test_debug, x_query_debug], dim=0)
+        y_full_debug = torch.cat([y_test_debug, y_query_debug], dim=0)
+        tokens_debug = encode_sequence_tokens(x_full_debug, y_full_debug).unsqueeze(0).to(device)
+        pred_debug = model.predict_y_from_x_tokens(tokens_debug)
+        print(f"[DEBUG] Initial model prediction (before optimization) on test input: {pred_debug[0, -1].item():.6f}")
+    
     # Optimization loop
     for opt_step in range(num_steps):
         if opt_step == 0:
@@ -433,11 +476,18 @@ def optimize_prompt_for_checkpoint(
                 x_context_use = torch.cat([x_context, x_pad], dim=0)
                 y_context_use = torch.cat([y_context, y_pad], dim=0)
         
-        # Sample fresh x_test values at each gradient step
-        x_test_all = torch.randn(n_x_test, D, device=device)  # (n_x_test, D)
+        # Use fixed x_test for constant mapping, sample fresh for other mappings
+        if mapping_type == "constant":
+            x_test_all = x_test_fixed  # Reuse the same x_test
+            if opt_step == 0:
+                print(f"[DEBUG] Step {opt_step}: Using fixed x_test (constant mapping)")
+        else:
+            x_test_all = torch.randn(n_x_test, D, device=device)  # Sample fresh
+            if opt_step == 0:
+                print(f"[DEBUG] Step {opt_step}: Sampling fresh x_test values")
         
         if opt_step == 0:
-            print(f"[DEBUG] Step {opt_step}: Computing losses over {n_x_test} fresh x_test values (batched) using frozen mapping function...")
+            print(f"[DEBUG] Step {opt_step}: Computing losses over {n_x_test} x_test values (batched) using frozen mapping function...")
         
         # Batch process all x_test values in parallel for efficiency
         # Note: mapping_fn is frozen (created once at start), so y_desired is stable
@@ -470,7 +520,9 @@ def optimize_prompt_for_checkpoint(
         y_pred_batch = y_pred_all_batch[:, -1]  # Predictions for query points: (n_x_test,)
         
         if opt_step == 0:
-            print(f"[DEBUG] Step {opt_step}: Batch predictions shape: {y_pred_batch.shape}, first pred: {y_pred_batch[0].item():.4f}")
+            print(f"[DEBUG] Step {opt_step}: Batch predictions shape: {y_pred_batch.shape}")
+            print(f"[DEBUG] Step {opt_step}: First 5 predictions: {y_pred_batch[:5].cpu().tolist()}")
+            print(f"[DEBUG] Step {opt_step}: Mean prediction: {y_pred_batch.mean().item():.6f}, Std: {y_pred_batch.std().item():.6f}")
         
         # Get desired values from mapping function for all x_test
         # Note: mapping_fn returns scalar, so we need to call it for each x_test
@@ -606,19 +658,27 @@ def plot_optimization_results(
     mapping_type = results.get("mapping_type", "constant")
     n_x_test = results.get("n_x_test", 1)
     
-    # Plot 1: Average Loss Trajectory
+    # Plot 1: Model Prediction (for constant mapping) or Average Loss (for other mappings)
     ax = axes[0, 0]
-    ax.plot(loss_traj, linewidth=3, label="Avg Loss", color="blue")
-    ax.set_title(f"Loss Trajectory (mapping={mapping_type}, n_x_test={n_x_test})")
-    ax.set_xlabel("Steps")
-    ax.set_ylabel("Average Loss")
+    if mapping_type == "constant":
+        ax.plot(prediction_traj, linewidth=3, label="Model Prediction", color="blue")
+        if target is not None:
+            ax.axhline(target, color="red", linestyle="--", linewidth=2, label="Target")
+        ax.set_title("Model Output Trajectory")
+        ax.set_xlabel("Steps")
+        ax.set_ylabel("Model Prediction")
+    else:
+        ax.plot(loss_traj, linewidth=3, label="Avg Loss", color="blue")
+        ax.set_title("Loss Trajectory")
+        ax.set_xlabel("Steps")
+        ax.set_ylabel("Average Loss")
     ax.legend()
     ax.grid(True, alpha=0.3)
     
     # Plot 2: Max Perturbation (Magnitude Control)
     ax = axes[0, 1]
     ax.plot(pert_max_traj, linewidth=3, color="orange", label="Max |Change|")
-    ax.set_title("Magnitude Control (Max Perturbation Size)")
+    ax.set_title("Max Perturbation Size")
     ax.set_xlabel("Steps")
     ax.set_ylabel("Max Absolute Change")
     ax.legend()
@@ -636,7 +696,7 @@ def plot_optimization_results(
         color=colors,
         alpha=0.8,
     )
-    ax.set_title("Y Perturbation Vector (Sparsity Pattern)")
+    ax.set_title("Sparsity Pattern")
     ax.set_xlabel("Prompt Index")
     ax.set_ylabel("Y Change Magnitude")
     ax.axhline(0, color="black", linewidth=1)
@@ -662,7 +722,7 @@ def plot_optimization_results(
         
         ax.plot(range(n_prompt), x_pert_magnitude, 'o-', label="X Perturbation (L2 norm)", color="red", linewidth=2, markersize=4)
         ax.plot(range(n_prompt), y_pert_magnitude, 's-', label="Y Perturbation (abs)", color="blue", linewidth=2, markersize=4)
-        ax.set_title("X and Y Perturbation Magnitudes")
+        ax.set_title("Before vs After (Y Values)")
         ax.set_xlabel("Prompt Index")
         ax.set_ylabel("Perturbation Magnitude")
         ax.legend()
@@ -676,21 +736,6 @@ def plot_optimization_results(
         ax.set_ylabel("Y Value")
         ax.legend()
         ax.grid(True, alpha=0.3, axis="y")
-    
-    # Overall title
-    M = results["M"]
-    step = results["step"]
-    mapping_type = results.get("mapping_type", "constant")
-    n_x_test = results.get("n_x_test", 1)
-    title_parts = [f"M={M}, Step={step}", f"mapping={mapping_type}, n_x_test={n_x_test}"]
-    if mapping_type == "constant" and target is not None:
-        title_parts.append(f"target={target}")
-    title_parts.append(f"Sparsity={results['sparsity_count']}/{n_prompt}")
-    fig.suptitle(
-        f"Prompt Optimization: {checkpoint_name}\n" + ", ".join(title_parts),
-        fontsize=14,
-        y=0.995,
-    )
     
     plt.tight_layout()
     plt.savefig(output_path, dpi=150, bbox_inches="tight")
