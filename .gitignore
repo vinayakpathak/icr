@@ -48,6 +48,9 @@ ENV/
 .env
 .env.local
 
+# R2 credentials
+r2_config.json
+
 # Generated results
 gradient_results.json
 experiment_metadata.json
