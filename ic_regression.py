@@ -285,6 +285,130 @@ class ICLinearRegressionTransformer(nn.Module):
 #  Training loop
 # =====================
 
+def _get_r2_client(r2_config_path: str = "r2_config.json"):
+    """
+    Get R2 client with credentials from config file or environment variables.
+    
+    Args:
+        r2_config_path: Path to R2 config JSON file
+        
+    Returns:
+        Tuple of (boto3.client, bucket_name)
+    """
+    try:
+        import boto3
+        from botocore.exceptions import ClientError
+        from botocore.config import Config
+        import json
+    except ImportError:
+        raise ImportError("boto3 is required for R2 upload. Install with: pip install boto3")
+    
+    # Load R2 config
+    if not os.path.exists(r2_config_path):
+        raise FileNotFoundError(f"R2 config file not found: {r2_config_path}")
+    
+    with open(r2_config_path, 'r') as f:
+        r2_config = json.load(f)
+    
+    account_id = r2_config.get("account_id") or os.getenv("R2_ACCOUNT_ID")
+    access_key_id = r2_config.get("access_key_id") or os.getenv("R2_ACCESS_KEY_ID")
+    secret_access_key = r2_config.get("secret_access_key") or os.getenv("R2_SECRET_ACCESS_KEY")
+    bucket_name = r2_config.get("bucket_name") or os.getenv("R2_BUCKET_NAME", "elicitation")
+    endpoint_url = r2_config.get("endpoint_url") or os.getenv("R2_ENDPOINT_URL")
+    
+    if not account_id or not access_key_id or not secret_access_key:
+        raise ValueError("R2 credentials not found. Set in r2_config.json or environment variables.")
+    
+    # Create R2 client
+    if endpoint_url is None:
+        endpoint_url = f"https://{account_id}.r2.cloudflarestorage.com"
+    
+    boto_config = Config(
+        signature_version='s3v4',
+        s3={'addressing_style': 'path'}
+    )
+    
+    client = boto3.client(
+        's3',
+        endpoint_url=endpoint_url,
+        aws_access_key_id=access_key_id,
+        aws_secret_access_key=secret_access_key,
+        config=boto_config,
+    )
+    
+    return client, bucket_name
+
+
+def _upload_task_vector_to_r2(
+    task_vector_path: str,
+    checkpoint_dir: str,
+    version_suffix: Optional[str] = None,
+    r2_config_path: str = "r2_config.json",
+) -> None:
+    """
+    Upload a task vector file to R2 storage.
+    
+    Args:
+        task_vector_path: Path to the task vector file to upload
+        checkpoint_dir: Checkpoint directory (used to determine S3 key structure)
+        version_suffix: Version suffix for R2 path (e.g., "v3" -> "tasks_v3", None -> "tasks")
+        r2_config_path: Path to R2 config JSON file
+    """
+    client, bucket_name = _get_r2_client(r2_config_path)
+    
+    # Determine S3 key: tasks{_version_suffix}/checkpoints_M{M}/tasks_M{M}.pt
+    # Extract checkpoint directory name (e.g., "checkpoints_M64")
+    checkpoint_name = os.path.basename(checkpoint_dir)
+    filename = os.path.basename(task_vector_path)
+    if version_suffix:
+        s3_key = f"tasks_{version_suffix}/{checkpoint_name}/{filename}"
+    else:
+        s3_key = f"tasks/{checkpoint_name}/{filename}"
+    
+    # Upload file
+    try:
+        from botocore.exceptions import ClientError
+        client.upload_file(task_vector_path, bucket_name, s3_key)
+        print(f"  ✓ Uploaded task vectors to R2: {s3_key}")
+    except ClientError as e:
+        raise Exception(f"Failed to upload to R2: {e}")
+
+
+def _upload_checkpoint_to_r2(
+    checkpoint_path: str,
+    checkpoint_dir: str,
+    version_suffix: Optional[str] = None,
+    r2_config_path: str = "r2_config.json",
+) -> None:
+    """
+    Upload a checkpoint file to R2 storage.
+    
+    Args:
+        checkpoint_path: Path to the checkpoint file to upload
+        checkpoint_dir: Checkpoint directory (used to determine S3 key structure)
+        version_suffix: Version suffix for R2 path (e.g., "v3" -> "checkpoints_v3", None -> "checkpoints")
+        r2_config_path: Path to R2 config JSON file
+    """
+    client, bucket_name = _get_r2_client(r2_config_path)
+    
+    # Determine S3 key: checkpoints{_version_suffix}/checkpoints_M{M}/checkpoint_*.pt
+    # Extract checkpoint directory name (e.g., "checkpoints_M64")
+    checkpoint_name = os.path.basename(checkpoint_dir)
+    filename = os.path.basename(checkpoint_path)
+    if version_suffix:
+        s3_key = f"checkpoints_{version_suffix}/{checkpoint_name}/{filename}"
+    else:
+        s3_key = f"checkpoints/{checkpoint_name}/{filename}"
+    
+    # Upload file
+    try:
+        from botocore.exceptions import ClientError
+        client.upload_file(checkpoint_path, bucket_name, s3_key)
+        print(f"  ✓ Uploaded checkpoint to R2: {s3_key}")
+    except ClientError as e:
+        raise Exception(f"Failed to upload checkpoint to R2: {e}")
+
+
 def train_ic_regression(
     cfg: ICRegConfig,
     M: Optional[Union[int, str]] = None,
@@ -301,6 +425,11 @@ def train_ic_regression(
     early_stopping_patience: Optional[int] = None,  # Stop if loss doesn't improve for N evaluations (None = no early stopping)
     early_stopping_min_delta: float = 1e-6,  # Minimum change to qualify as improvement
     early_stopping_eval_every: Optional[int] = None,  # Evaluate for early stopping every N steps (defaults to print_every)
+    save_task_vectors: bool = True,  # Save task vectors used during training
+    upload_task_vectors_to_r2: bool = True,  # Upload task vectors to R2 (requires R2 credentials)
+    upload_checkpoints_to_r2: bool = True,  # Upload checkpoints to R2 (requires R2 credentials)
+    version_suffix: Optional[str] = None,  # Version suffix for directories (e.g., "v3" -> "checkpoints_v3", None -> "checkpoints")
+    r2_config_path: str = "r2_config.json",  # Path to R2 config file
 ):
     """
     Basic training loop for a single task diversity M.
@@ -324,6 +453,54 @@ def train_ic_regression(
     # Pre-sample nested tasks (shared across all M if you re-use)
     # Keep on CPU for dataset - will be moved to device in training loop
     tasks = sample_task_sequence(cfg.max_M, cfg.D)
+    
+    # Save task vectors if requested
+    if save_task_vectors and isinstance(M, int):
+        # Determine task vector directory based on checkpoint directory
+        if checkpoint_dir is not None:
+            # Create tasks directory that mirrors checkpoint directory structure
+            # e.g., "checkpoints_v3/checkpoints_M64" -> "tasks_v3/checkpoints_M64"
+            # or "checkpoints/checkpoints_M64" -> "tasks/checkpoints_M64" (if version_suffix is None)
+            checkpoint_name = os.path.basename(checkpoint_dir)
+            base_dir = os.path.dirname(checkpoint_dir) if os.path.dirname(checkpoint_dir) else ""
+            
+            if base_dir:
+                # Has parent directory, replace "checkpoints" with "tasks"
+                # Handle both "checkpoints" and "checkpoints_{version_suffix}"
+                if version_suffix:
+                    # Replace "checkpoints_v3" -> "tasks_v3", etc.
+                    tasks_base = base_dir.replace("checkpoints", "tasks", 1)
+                else:
+                    # Replace "checkpoints" -> "tasks"
+                    tasks_base = base_dir.replace("checkpoints", "tasks", 1)
+                tasks_dir = os.path.join(tasks_base, checkpoint_name)
+            else:
+                # No parent directory, create tasks directory with version suffix if provided
+                if version_suffix:
+                    tasks_dir = os.path.join(f"tasks_{version_suffix}", checkpoint_name)
+                else:
+                    tasks_dir = os.path.join("tasks", checkpoint_name)
+            
+            os.makedirs(tasks_dir, exist_ok=True)
+            
+            # Extract first M task vectors and save
+            tasks_M = tasks[:M]  # Shape: (M, D)
+            task_vector_path = os.path.join(tasks_dir, f"tasks_M{M}.pt")
+            torch.save(tasks_M, task_vector_path)
+            print(f"Saved task vectors for M={M} to {task_vector_path}")
+            
+            # Upload to R2 if requested
+            if upload_task_vectors_to_r2:
+                try:
+                    _upload_task_vector_to_r2(
+                        task_vector_path=task_vector_path,
+                        checkpoint_dir=checkpoint_dir,
+                        version_suffix=version_suffix,
+                        r2_config_path=r2_config_path,
+                    )
+                except Exception as e:
+                    print(f"WARNING: Failed to upload task vectors to R2: {e}")
+                    print("  Continuing training without R2 upload...")
 
     # Build dataset & dataloader
     # Dataset always uses CPU - tensors moved to device in training loop
@@ -522,12 +699,38 @@ def train_ic_regression(
             checkpoint_path = os.path.join(checkpoint_dir, f"checkpoint_step_{step}.pt")
             save_checkpoint(checkpoint_path, model, optimizer, scheduler, step, cfg, M)
             print(f"[step {step}] Saved checkpoint to {checkpoint_path}")
+            
+            # Upload to R2 if requested
+            if upload_checkpoints_to_r2:
+                try:
+                    _upload_checkpoint_to_r2(
+                        checkpoint_path=checkpoint_path,
+                        checkpoint_dir=checkpoint_dir,
+                        version_suffix=version_suffix,
+                        r2_config_path=r2_config_path,
+                    )
+                except Exception as e:
+                    print(f"WARNING: Failed to upload checkpoint to R2: {e}")
+                    print("  Continuing training without R2 upload...")
 
     # Save final checkpoint
     if checkpoint_dir is not None:
         final_checkpoint_path = os.path.join(checkpoint_dir, "checkpoint_final.pt")
         save_checkpoint(final_checkpoint_path, model, optimizer, scheduler, step, cfg, M)
         print(f"Saved final checkpoint to {final_checkpoint_path}")
+        
+        # Upload to R2 if requested
+        if upload_checkpoints_to_r2:
+            try:
+                _upload_checkpoint_to_r2(
+                    checkpoint_path=final_checkpoint_path,
+                    checkpoint_dir=checkpoint_dir,
+                    version_suffix=version_suffix,
+                    r2_config_path=r2_config_path,
+                )
+            except Exception as e:
+                print(f"WARNING: Failed to upload final checkpoint to R2: {e}")
+                print("  Continuing without R2 upload...")
 
     return model
 
