@@ -1,0 +1,2 @@
+- Always activate the local venv before running python.
+- Never selectively git add. Anyting that shouldn't be added should be put into gitignore. Always use git add --all after that.

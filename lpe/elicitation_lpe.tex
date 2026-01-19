@@ -1,0 +1,486 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb,amsthm,mathtools}
+
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\Pp}{\mathbb{P}}
+\newcommand{\ind}{\mathbf{1}}
+\newcommand{\KL}{\mathrm{KL}}
+
+\theoremstyle{plain}
+\newtheorem{theorem}{Theorem}
+\newtheorem{lemma}{Lemma}
+\newtheorem{proposition}{Proposition}
+\newtheorem{corollary}{Corollary}
+
+\theoremstyle{definition}
+\newtheorem{definition}{Definition}
+
+\theoremstyle{remark}
+\newtheorem{remark}{Remark}
+
+\title{Rare-event estimation for Bayesian predictive rollouts:\\
+rollout Monte Carlo vs.\ posterior sampling (Rao--Blackwellization)}
+\author{Vinayak Pathak}
+\date{}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+We study the probability of a rare event $A$ defined on the future outputs of a Bayesian predictive model after conditioning on observed data $y_{1:n}$. Two Monte Carlo strategies are compared:
+(i) direct sampling of future rollouts from the posterior predictive and counting hits of $A$ (an indicator estimator), and
+(ii) sampling parameters $\theta$ from the posterior and computing $f(\theta)=\Pp(A\mid \theta,y_{1:n})$ analytically (a Rao--Blackwellized estimator).
+We give a self-contained multiplicative Chernoff bound for bounded random variables, derive high-probability relative-error sample complexity for both methods, and characterize when an exponential gap is possible. We also record extensions beyond iid Bernoulli to multinomials and HMM/state-space models.
+\end{abstract}
+
+\section{Bayesian predictive distributions and autoregressive rollouts}
+
+\subsection{General Bayesian setup}
+Let $\theta\in\Theta$ be a parameter with prior $\pi_0(d\theta)$. Let $Y_{1:N}$ be observations with likelihood
+\[
+p_\theta(y_{1:N}) = p(y_{1:N}\mid \theta).
+\]
+After observing $D:=y_{1:n}$, the posterior is
+\[
+\pi(d\theta\mid D) \propto p_\theta(D)\,\pi_0(d\theta).
+\]
+
+Fix a future horizon $m:=N-n$ and consider the future block $Y_{n+1:n+m}$.
+
+\begin{theorem}[Posterior predictive mixture / marginalization identity]
+\label{thm:posterior-predictive-mixture}
+For any measurable set $B$ in the space of length-$m$ sequences,
+\[
+\Pp\big(Y_{n+1:n+m}\in B \mid D\big)
+=
+\int \Pp_\theta\big(Y_{n+1:n+m}\in B \mid D\big)\,\pi(d\theta\mid D).
+\]
+\end{theorem}
+
+\begin{proof}
+By the law of total probability w.r.t.\ $\theta$,
+\[
+\Pp(Y_{n+1:n+m}\in B\mid D)
+=
+\int \Pp(Y_{n+1:n+m}\in B\mid \theta, D)\,\pi(d\theta\mid D),
+\]
+and $\Pp(Y_{n+1:n+m}\in B\mid \theta,D)=\Pp_\theta(Y_{n+1:n+m}\in B\mid D)$ by definition of the model under $\theta$.
+\end{proof}
+
+\begin{remark}[Autoregressive sampling vs.\ block sampling]
+If one sequentially samples
+\[
+Y_{n+t}\sim \Pp(\cdot\mid D, Y_{n+1:n+t-1}), \qquad t=1,2,\dots,m,
+\]
+then by the chain rule the joint distribution of $Y_{n+1:n+m}$ equals the posterior predictive $\Pp(\cdot\mid D)$.
+Thus ``autoregressive rollout'' (sampling from one-step conditionals and feeding back) and ``block sampling'' from $\Pp(Y_{n+1:n+m}\mid D)$ are equivalent ways to generate future sequences.
+\end{remark}
+
+\section{Rare events and two estimators}
+
+\begin{definition}[Rare-event probability]
+Fix an event $A$ measurable w.r.t.\ the future block $Y_{n+1:n+m}$. Define
+\[
+q := \Pp(A\mid D).
+\]
+For each $\theta$, define the conditional event probability
+\[
+f(\theta) := \Pp_\theta(A\mid D).
+\]
+\end{definition}
+
+\begin{corollary}[Rare-event probability as a posterior expectation]
+\label{cor:q-is-expectation}
+\[
+q = \E_{\theta\sim \pi(\cdot\mid D)}\big[f(\theta)\big].
+\]
+\end{corollary}
+
+\begin{proof}
+Apply Theorem~\ref{thm:posterior-predictive-mixture} with $B=A$.
+\end{proof}
+
+\subsection{Estimator 1: rollout hit-rate}
+Sample $R$ independent rollouts $Y^{(r)}_{n+1:n+m}\sim \Pp(\cdot\mid D)$ and define
+\[
+I_r := \ind\{Y^{(r)}_{n+1:n+m}\in A\},\qquad
+\widehat q_{\mathrm{roll}} := \frac{1}{R}\sum_{r=1}^R I_r.
+\]
+Then $I_r\sim \mathrm{Bernoulli}(q)$ and $\E[\widehat q_{\mathrm{roll}}]=q$.
+
+\subsection{Estimator 2: posterior sampling + analytic $f(\theta)$ (Rao--Blackwell)}
+Sample $\theta_1,\dots,\theta_M \overset{\text{iid}}{\sim} \pi(\cdot\mid D)$ and compute
+\[
+X_i := f(\theta_i),\qquad
+\widehat q_{\mathrm{post}} := \frac{1}{M}\sum_{i=1}^M X_i.
+\]
+Then $\E[\widehat q_{\mathrm{post}}]=q$.
+In what follows we assume $f(\theta)$ can be computed exactly (or to negligible error) given $\theta$.
+
+\begin{lemma}[Variance decomposition / Rao--Blackwell]
+\label{lem:rao-blackwell}
+Let $I:=\ind\{A\}$ be the indicator of $A$ under a single posterior predictive draw. Then
+\[
+\Var(I) = \E\!\big[\Var(I\mid \theta)\big] + \Var\!\big(\E[I\mid \theta]\big),
+\]
+and since $\E[I\mid \theta]=f(\theta)$ we have
+\[
+\Var\big(f(\theta)\big) \le \Var(I)=q(1-q).
+\]
+\end{lemma}
+
+\begin{proof}
+This is the law of total variance applied to $(I,\theta)$, using $f(\theta)=\Pp(A\mid \theta,D)=\E[I\mid \theta]$.
+\end{proof}
+
+\section{A Chernoff bound for bounded random variables (with proof)}
+
+We will use a multiplicative Chernoff bound that holds for \emph{any} independent bounded random variables in $[0,1]$, not just Bernoullis.
+
+\begin{lemma}[MGF domination by a Bernoulli]
+\label{lem:mgf-domination}
+Let $Z\in[0,1]$ be a random variable with $\E[Z]=\mu$. Then for any $\lambda\in\mathbb{R}$,
+\[
+\E\big[e^{\lambda Z}\big]
+\le
+\exp\!\big(\mu(e^\lambda-1)\big).
+\]
+\end{lemma}
+
+\begin{proof}
+The function $x\mapsto e^{\lambda x}$ is convex, so for $x\in[0,1]$,
+\[
+e^{\lambda x} \le (1-x)e^{0} + x e^{\lambda} = 1 + x(e^{\lambda}-1).
+\]
+Taking expectations and using $\E[Z]=\mu$ gives
+\[
+\E[e^{\lambda Z}] \le 1 + \mu(e^\lambda-1) \le \exp\!\big(\mu(e^\lambda-1)\big),
+\]
+where the last inequality uses $1+u\le e^u$.
+\end{proof}
+
+\begin{theorem}[Multiplicative Chernoff bound for $[0,1]$ variables]
+\label{thm:chernoff}
+Let $Z_1,\dots,Z_M$ be independent random variables with $Z_i\in[0,1]$ and $\E[Z_i]=\mu$.
+Let $\bar Z := \frac{1}{M}\sum_{i=1}^M Z_i$.
+Then for any $\rho\in(0,1)$,
+\[
+\Pp\big(\bar Z \ge (1+\rho)\mu\big)
+\le
+\exp\!\Big(-\mu M\big((1+\rho)\ln(1+\rho)-\rho\big)\Big)
+\le
+\exp\!\left(-\frac{\rho^2\mu M}{3}\right),
+\]
+and
+\[
+\Pp\big(\bar Z \le (1-\rho)\mu\big)
+\le
+\exp\!\Big(-\mu M\big(\rho + (1-\rho)\ln(1-\rho)\big)\Big)
+\le
+\exp\!\left(-\frac{\rho^2\mu M}{2}\right).
+\]
+Consequently,
+\[
+\Pp\big(|\bar Z-\mu|\ge \rho\mu\big)
+\le
+2\exp\!\left(-\frac{\rho^2\mu M}{3}\right).
+\]
+\end{theorem}
+
+\begin{proof}
+Let $S:=\sum_{i=1}^M Z_i$, so $\E[S]=\mu M$.
+
+\emph{Upper tail.}
+For $\lambda>0$, Markov's inequality gives
+\[
+\Pp(S\ge (1+\rho)\mu M)
+=
+\Pp\big(e^{\lambda S}\ge e^{\lambda(1+\rho)\mu M}\big)
+\le
+\frac{\E[e^{\lambda S}]}{e^{\lambda(1+\rho)\mu M}}.
+\]
+By independence and Lemma~\ref{lem:mgf-domination},
+\[
+\E[e^{\lambda S}]
+=
+\prod_{i=1}^M \E[e^{\lambda Z_i}]
+\le
+\prod_{i=1}^M \exp\!\big(\mu(e^\lambda-1)\big)
+=
+\exp\!\big(\mu M(e^\lambda-1)\big).
+\]
+Thus
+\[
+\Pp(S\ge (1+\rho)\mu M)
+\le
+\exp\!\big(\mu M(e^\lambda-1) - \lambda(1+\rho)\mu M\big).
+\]
+Optimize over $\lambda>0$; the minimizer is $\lambda^\star=\ln(1+\rho)$, yielding
+\[
+\Pp(S\ge (1+\rho)\mu M)
+\le
+\exp\!\Big(-\mu M\big((1+\rho)\ln(1+\rho)-\rho\big)\Big).
+\]
+To get the simpler $\rho^2/3$ bound for $\rho\in(0,1)$, note that for $\rho\in[0,1]$,
+\[
+(1+\rho)\ln(1+\rho)-\rho \ge \frac{\rho^2}{3}.
+\]
+A short proof: define $g(\rho)=(1+\rho)\ln(1+\rho)-\rho-\rho^2/3$. Then
+$g(0)=0$ and
+\[
+g'(\rho)=\ln(1+\rho)-\frac{2\rho}{3}.
+\]
+Since $\ln(1+\rho)$ is concave, it lies above the chord from $(0,0)$ to $(1,\ln2)$:
+$\ln(1+\rho)\ge \rho\ln2$ for $\rho\in[0,1]$. Because $\ln2>2/3$, we get
+$g'(\rho)\ge \rho(\ln2-2/3)\ge0$, hence $g(\rho)\ge0$.
+
+\emph{Lower tail.}
+Similarly, for $\lambda<0$,
+\[
+\Pp(S\le (1-\rho)\mu M)
+=
+\Pp\big(e^{\lambda S}\ge e^{\lambda(1-\rho)\mu M}\big)
+\le
+\frac{\E[e^{\lambda S}]}{e^{\lambda(1-\rho)\mu M}}
+\le
+\exp\!\big(\mu M(e^\lambda-1) - \lambda(1-\rho)\mu M\big).
+\]
+Optimize over $\lambda<0$; the minimizer is $\lambda^\star=\ln(1-\rho)$, giving
+\[
+\Pp(S\le (1-\rho)\mu M)
+\le
+\exp\!\Big(-\mu M\big(\rho + (1-\rho)\ln(1-\rho)\big)\Big).
+\]
+To get the simpler $\rho^2/2$ bound, define
+$h(\rho)=\rho + (1-\rho)\ln(1-\rho)-\rho^2/2$.
+Then $h(0)=0$ and
+\[
+h'(\rho) = -\ln(1-\rho)-\rho \ge 0
+\]
+because $-\ln(1-\rho)\ge \rho$ for $\rho\in[0,1)$ (equivalently $\ln(1-\rho)\le -\rho$).
+Hence $h(\rho)\ge0$.
+
+Finally, combine the two tails and use the weaker constant $3$ to obtain the stated two-sided bound.
+\end{proof}
+
+\begin{corollary}[Relative-error sample size for bounded variables]
+\label{cor:sample-size-bounded}
+Under the conditions of Theorem~\ref{thm:chernoff}, for $\rho\in(0,1)$ and $\delta\in(0,1)$,
+\[
+M \;\ge\; \frac{3}{\rho^2\mu}\ln\frac{2}{\delta}
+\quad\Longrightarrow\quad
+\Pp\big(|\bar Z-\mu|\le \rho\mu\big)\ge 1-\delta.
+\]
+\end{corollary}
+
+\section{Sample complexity: rollouts vs posterior sampling}
+
+Throughout this section, fix $\rho\in(0,1)$ and $\delta\in(0,1)$.
+
+\subsection{Estimating $q$ via rollouts}
+\begin{theorem}[Rollout estimator sample complexity]
+\label{thm:rollout-sample-complexity}
+Let $I_r=\ind\{A\}$ from an iid posterior-predictive rollout. Then for
+\[
+R \;\ge\; \frac{3}{\rho^2 q}\ln\frac{2}{\delta},
+\]
+we have $\Pp(|\widehat q_{\mathrm{roll}}-q|\le \rho q)\ge 1-\delta$.
+\end{theorem}
+
+\begin{proof}
+Apply Corollary~\ref{cor:sample-size-bounded} to $Z_r=I_r\in[0,1]$ with mean $\mu=q$.
+\end{proof}
+
+\subsection{Estimating $q$ via posterior sampling and analytic $f(\theta)$}
+Define
+\[
+b := \sup_{\theta\in\Theta} f(\theta) \in (0,1].
+\]
+Since $f(\theta)$ is a probability, $b\le 1$, but for many ``thin'' events $b\ll 1$.
+
+\begin{theorem}[Posterior-sampling estimator sample complexity]
+\label{thm:posterior-sample-complexity}
+Assume $0\le f(\theta)\le b$ for all $\theta$, and define $X_i=f(\theta_i)$ with $\theta_i\overset{\text{iid}}{\sim}\pi(\cdot\mid D)$.
+Then for
+\[
+M \;\ge\; \frac{3b}{\rho^2 q}\ln\frac{2}{\delta},
+\]
+we have $\Pp(|\widehat q_{\mathrm{post}}-q|\le \rho q)\ge 1-\delta$.
+\end{theorem}
+
+\begin{proof}
+Let $Z_i := X_i/b \in [0,1]$. Then $\E[Z_i]=\E[X_i]/b=q/b$ and $\widehat q_{\mathrm{post}}=b\,\bar Z$.
+Moreover,
+\[
+\frac{|\widehat q_{\mathrm{post}}-q|}{q}
+=
+\frac{|b\bar Z - b\E[Z]|}{b\E[Z]}
+=
+\frac{|\bar Z - \E[Z]|}{\E[Z]}.
+\]
+Apply Corollary~\ref{cor:sample-size-bounded} with $\mu=q/b$.
+\end{proof}
+
+\begin{corollary}[Improvement factor in sample count]
+\label{cor:improvement-factor}
+Comparing Theorems~\ref{thm:rollout-sample-complexity} and~\ref{thm:posterior-sample-complexity}, the posterior method reduces the required number of Monte Carlo samples by a factor
+\[
+\frac{R}{M} \approx \frac{1}{b}.
+\]
+Thus a large gap is possible exactly when $b=\sup_\theta f(\theta)$ is very small.
+\end{corollary}
+
+\subsection{Tightness: a worst-case posterior can saturate the bound}
+\begin{proposition}[Worst-case tightness via a two-point posterior]
+\label{prop:tightness}
+Suppose there exist $\theta_0,\theta_1$ such that $f(\theta_0)=0$ and $f(\theta_1)=b$.
+For any $q\in(0,b)$, define a posterior supported on $\{\theta_0,\theta_1\}$ by
+\[
+\pi(\theta=\theta_1\mid D)=\frac{q}{b},
+\qquad
+\pi(\theta=\theta_0\mid D)=1-\frac{q}{b}.
+\]
+Then $Z=f(\theta)/b$ is exactly $\mathrm{Bernoulli}(q/b)$.
+In particular, estimating $q$ by posterior sampling is information-theoretically as hard as estimating the mean of a Bernoulli$(q/b)$, so $M=\Omega\!\left(\frac{b}{\rho^2 q}\log\frac{1}{\delta}\right)$ samples are necessary (up to constants).
+\end{proposition}
+
+\begin{proof}
+Under this posterior, $f(\theta)$ equals $b$ with probability $q/b$ and $0$ otherwise, hence $Z=f(\theta)/b$ is Bernoulli$(q/b)$.
+Standard lower bounds for Bernoulli mean estimation (e.g.\ Le Cam's method on $\mu$ vs.\ $(1+\rho)\mu$) imply the stated necessity; the upper bound in Theorem~\ref{thm:posterior-sample-complexity} matches this scaling up to constants.
+\end{proof}
+
+\section{``Seeing one hit'' vs.\ ``estimating $q$''}
+If the goal is to \emph{observe} at least one realization in $A$ (rather than estimate $q$), then nothing beats the $1/q$ barrier.
+
+\begin{proposition}[Samples needed to see at least one event]
+\label{prop:see-one}
+If $Y^{(1)},\dots,Y^{(R)}$ are iid draws from the posterior predictive and $\Pp(A\mid D)=q$, then
+\[
+\Pp(\exists r:\, Y^{(r)}\in A)=1-(1-q)^R.
+\]
+Thus to see at least one hit with probability $\ge 1-\delta$, it suffices (and is necessary up to constants for small $q$) that
+\[
+R \gtrsim \frac{1}{q}\ln\frac{1}{\delta}.
+\]
+Moreover, sampling $\theta\sim \pi(\cdot\mid D)$ and then sampling $Y\sim p_\theta(\cdot\mid D)$ produces exactly one posterior-predictive draw, so posterior sampling does not change this hit complexity unless one uses analytic $f(\theta)$ (i.e.\ one is no longer waiting for a literal hit).
+\end{proposition}
+
+\section{Bernoulli strings: two instructive extremes}
+
+Let $Y_t\in\{0,1\}$ and parameter $\theta=p\in[0,1]$.
+Let $m=N-n$ be the horizon.
+
+\subsection{Event $A=$ all ones (no sample-count gain)}
+If $A=\{Y_{n+1}=\dots=Y_{n+m}=1\}$, then $f(p)=p^m$ and
+\[
+b=\sup_{p\in[0,1]} p^m = 1,
+\]
+so Corollary~\ref{cor:improvement-factor} gives no sample-count improvement in the worst case:
+$M$ and $R$ both scale like $\Theta\!\big(\frac{1}{q}\big)$ for fixed $(\rho,\delta)$.
+
+\subsection{Event $A=$ one fixed mixed string (exponential gain possible)}
+Let $A=\{Y_{n+1:n+m}=s\}$ for a prespecified string $s\in\{0,1\}^m$ with $k$ ones and $m-k$ zeros ($1\le k\le m-1$). Then
+\[
+f(p)=p^k(1-p)^{m-k},
+\qquad
+b=\max_{p\in[0,1]} f(p)=\left(\frac{k}{m}\right)^k\left(\frac{m-k}{m}\right)^{m-k}.
+\]
+Hence the improvement factor is
+\[
+\frac{1}{b}
+=
+\left(\frac{m}{k}\right)^k\left(\frac{m}{m-k}\right)^{m-k}
+=
+\exp\!\Big(m\,H\!\big(k/m\big)\Big),
+\]
+where $H(x)=-x\ln x-(1-x)\ln(1-x)$ is the binary entropy (natural logs).
+In particular, for $k=m/2$ one gets $b=2^{-m}$ and the improvement factor $2^m$.
+
+\section{Beyond Bernoulli: multinomials, HMMs, and state-space models}
+
+\subsection{Multinomial (Dirichlet--Categorical) generalization}
+Let $Y_t\in\{1,\dots,K\}$, $\theta=\pi\in\Delta^{K-1}$, and $p_\pi(y_{1:N})=\prod_{t=1}^N \pi_{y_t}$ (iid categorical).
+For a prespecified length-$m$ string $s$ with counts $c_1,\dots,c_K$ (so $\sum_j c_j=m$),
+\[
+f(\pi)=\Pp_\pi(Y_{n+1:n+m}=s\mid D)=\prod_{j=1}^K \pi_j^{c_j},
+\]
+and
+\[
+b=\sup_{\pi\in\Delta^{K-1}} \prod_{j=1}^K \pi_j^{c_j} = \prod_{j=1}^K \left(\frac{c_j}{m}\right)^{c_j}.
+\]
+If $c_j=m/K$ (balanced), then $b=K^{-m}$ and the improvement factor is $K^m$.
+
+\subsection{Hidden Markov models: analytic $f(\theta)$ via forward DP and exponential $b$}
+Consider an HMM with finite latent states $X_t\in\{1,\dots,S\}$ and observations $Y_t\in\mathcal{Y}$.
+A parameter $\theta$ specifies an initial distribution $\pi_\theta(x_1)$, transition matrix $T_\theta(x' \mid x)$, and emission probabilities $E_\theta(y\mid x)$.
+Given $\theta$,
+\[
+\Pp_\theta(y_{1:m})
+=
+\sum_{x_{1:m}}
+\pi_\theta(x_1)\prod_{t=2}^m T_\theta(x_t\mid x_{t-1})\prod_{t=1}^m E_\theta(y_t\mid x_t).
+\]
+For a \emph{fixed future string} $s\in\mathcal{Y}^m$ conditional on observed prefix $D=y_{1:n}$,
+\[
+f(\theta)=\Pp_\theta\big(Y_{n+1:n+m}=s \mid D\big)
+\]
+is computable by the standard forward algorithm: compute the filtered distribution over $X_n$ from $D$, then propagate $m$ steps multiplying by emissions for the fixed $s$.
+This costs $O(mS^2)$ time for discrete HMMs.
+
+The key quantity for sample complexity is $b=\sup_\theta f(\theta)$.
+A simple sufficient condition for exponential smallness of $b$ is a uniform emission peak bound.
+
+\begin{lemma}[Uniform per-step peak bound implies $b\le \eta^m$]
+\label{lem:hmm-eta}
+Assume there exists $\eta\in(0,1)$ such that for all $\theta$, all states $x$, and all symbols $y\in\mathcal{Y}$,
+\[
+E_\theta(y\mid x)\le \eta.
+\]
+Then for any fixed length-$m$ observation string $s\in\mathcal{Y}^m$ and any prefix $D$,
+\[
+\sup_{\theta} \Pp_\theta(Y_{n+1:n+m}=s\mid D) \le \eta^m.
+\]
+Hence $b\le \eta^m$ and the rollout-vs-posterior improvement factor is at least $\eta^{-m}$.
+\end{lemma}
+
+\begin{proof}
+Fix $\theta$ and condition on the prefix $D$.
+For each $t=1,\dots,m$,
+\[
+\Pp_\theta(Y_{n+t}=s_t \mid D, Y_{n+1:n+t-1}=s_{1:t-1})
+=
+\sum_x \Pp_\theta(X_{n+t}=x\mid D, s_{1:t-1})\,E_\theta(s_t\mid x)
+\le
+\max_x E_\theta(s_t\mid x)\le \eta.
+\]
+Multiplying the conditional probabilities via the chain rule gives
+\[
+\Pp_\theta(Y_{n+1:n+m}=s\mid D)\le \eta^m.
+\]
+Taking $\sup_\theta$ yields the claim.
+\end{proof}
+
+\begin{remark}[State-space models]
+For continuous-observation state-space models, the event ``$Y_{n+1:n+m}$ equals an exact real-valued trajectory'' typically has probability $0$.
+A direct analogue is to take $A$ to be a small neighborhood (e.g.\ an $\varepsilon$-tube) around a target trajectory, or to discretize/quantize observations.
+When the one-step observation likelihood/density is uniformly bounded above, an analogue of Lemma~\ref{lem:hmm-eta} typically yields $b\le (\text{const}\cdot \varepsilon)^m$ and therefore an exponential separation in $m$.
+\end{remark}
+
+\section{Executive summary of the main message}
+Let $q=\Pp(A\mid D)=\E_{\theta\sim\pi(\cdot\mid D)}[f(\theta)]$ with $f(\theta)=\Pp_\theta(A\mid D)$.
+
+\begin{itemize}
+\item \textbf{If you must literally wait for a hit of $A$ in simulation:} you need $\Theta\!\big(\frac{1}{q}\log\frac{1}{\delta}\big)$ posterior-predictive draws to see one hit with high probability.
+\item \textbf{If you only need to estimate $q$ and can compute $f(\theta)$:}
+rollout MC needs $R=\Theta\!\big(\frac{1}{\rho^2 q}\log\frac{1}{\delta}\big)$ samples, while posterior sampling needs
+\[
+M=\Theta\!\left(\frac{b}{\rho^2 q}\log\frac{1}{\delta}\right),
+\qquad b=\sup_\theta f(\theta).
+\]
+Thus the \textbf{sample-count improvement factor} is $\Theta(1/b)$, which can be exponential in $m$ for ``thin'' events where $b$ decays exponentially (e.g.\ fixed strings in multinomials, noisy HMMs).
+\end{itemize}
+
+\end{document}
+

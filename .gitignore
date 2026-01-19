@@ -62,4 +62,7 @@ checkpoints_M*/
 # Logs and process IDs
 logs/*.pid
 logs/*.log
+logs/*.jsonl
 
+# Checkpoints
+checkpoints*/
