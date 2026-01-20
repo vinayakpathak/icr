@@ -6,6 +6,7 @@ Implements a transformer that learns to do in-context Bayesian inference for Ber
 Demonstrates the posterior sampling method from the LPE paper.
 """
 
+import csv
 import math
 import os
 import warnings
@@ -880,12 +881,364 @@ def estimate_posterior_sampling_method(
 
 
 # =====================
+#  Diagnostics Helpers
+# =====================
+
+def estimate_posterior_sampling_method_fast(
+    model: BernoulliTransformer,
+    context: torch.Tensor,
+    target_string: torch.Tensor,
+    num_samples: int = 100,
+    rollout_length: int = 1000,
+    device: str = "cuda" if torch.cuda.is_available() else "cpu",
+) -> Tuple[float, float, float, float, float]:
+    """
+    Fast posterior sampling without plotting or verbose output.
+    
+    Returns: (estimate, std_error, sample_mean, sample_std, coef_var)
+    """
+    model = model.to(device)
+    model.eval()
+    context = context.to(device)
+    target_string = target_string.to(device)
+    
+    f_values = []
+    p_samples = []
+    
+    with torch.no_grad():
+        for _ in range(num_samples):
+            rollout = model.rollout(context, length=rollout_length, temperature=1.0)
+            if rollout.numel() == 0:
+                p_hat = 0.5
+            else:
+                p_hat = rollout.float().mean().item()
+            p_samples.append(p_hat)
+            f_values.append(compute_string_probability_given_p(target_string, p_hat))
+    
+    f_values = np.array(f_values, dtype=np.float64)
+    p_samples = np.array(p_samples, dtype=np.float64)
+    
+    estimate = float(f_values.mean()) if f_values.size else 0.0
+    f_std = float(f_values.std(ddof=1)) if f_values.size > 1 else 0.0
+    std_error = f_std / math.sqrt(num_samples) if num_samples > 1 else 0.0
+    p_mean = float(p_samples.mean()) if p_samples.size else 0.0
+    p_std = float(p_samples.std(ddof=1)) if p_samples.size > 1 else 0.0
+    coef_var = f_std / estimate if estimate > 0 else float("inf")
+    
+    return estimate, std_error, p_mean, p_std, coef_var
+
+
+def estimate_posterior_mean_from_rollouts(
+    model: BernoulliTransformer,
+    context: torch.Tensor,
+    num_rollouts: int = 200,
+    rollout_length: int = 100,
+    device: str = "cuda" if torch.cuda.is_available() else "cpu",
+) -> Tuple[float, float]:
+    """Estimate posterior mean p using rollouts; returns (mean, std)."""
+    model = model.to(device)
+    model.eval()
+    context = context.to(device)
+    
+    p_hats = []
+    with torch.no_grad():
+        for _ in range(num_rollouts):
+            rollout = model.rollout(context, length=rollout_length, temperature=1.0)
+            if rollout.numel() == 0:
+                p_hat = 0.5
+            else:
+                p_hat = rollout.float().mean().item()
+            p_hats.append(p_hat)
+    
+    p_hats = np.array(p_hats, dtype=np.float64)
+    p_mean = float(p_hats.mean()) if p_hats.size else 0.0
+    p_std = float(p_hats.std(ddof=1)) if p_hats.size > 1 else 0.0
+    return p_mean, p_std
+
+
+# =====================
+#  Diagnostics Runner
+# =====================
+
+def _make_target_string(
+    rng: np.random.Generator,
+    target_length: int,
+    target_mode: str,
+    true_p: float,
+    device: str,
+) -> torch.Tensor:
+    if target_mode == "alternating":
+        seq = torch.tensor([1, 0] * (target_length // 2), device=device)
+        if target_length % 2 == 1:
+            seq = torch.cat([seq, torch.tensor([1], device=device)])
+        return seq.long()
+    if target_mode == "balanced":
+        half = target_length // 2
+        seq = torch.tensor([1] * half + [0] * (target_length - half), device=device)
+        perm = torch.randperm(target_length, device=device)
+        return seq[perm].long()
+    if target_mode == "uniform":
+        seq = (torch.rand(target_length, device=device) < 0.5).long()
+        return seq
+    # Default: Bernoulli(true_p)
+    seq = (torch.rand(target_length, device=device) < true_p).long()
+    return seq
+
+
+def run_diagnostics(
+    model_path: Optional[str] = None,
+    train_model: bool = True,
+    train_seq_len: int = 256,
+    num_trials: int = 50,
+    context_length: int = 50,
+    target_length: int = 50,
+    num_posterior_samples: int = 100,
+    rollout_length_for_posterior: int = 1000,
+    num_p_rollouts: int = 200,
+    p_rollout_length: int = 100,
+    target_mode: str = "bernoulli",
+    p_min: float = 0.05,
+    p_max: float = 0.95,
+    seed: int = 123,
+    device: str = "cuda" if torch.cuda.is_available() else "cpu",
+    plot_dir: str = "plots",
+    print_every: int = 10,
+) -> None:
+    """Run repeated trials to diagnose posterior sampling accuracy."""
+    # Step 1: Train or load model
+    default_model_path = "checkpoints/bernoulli_transformer.pt"
+    if model_path is None:
+        model_path = default_model_path
+    
+    if train_model and os.path.exists(model_path):
+        print(f"Found existing checkpoint at {model_path}")
+        print("Set --no-train to skip training, or delete checkpoint to retrain")
+        train_model = False
+    
+    if train_model:
+        print("=" * 80)
+        print("Step 1: Training Transformer")
+        print("=" * 80)
+        model = BernoulliTransformer(
+            max_seq_len=None,
+            d_model=16,
+            n_layers=1,
+            n_heads=1,
+            d_mlp=16,
+            use_prenorm=True,
+        )
+        model = train_bernoulli_transformer(
+            model,
+            seq_len=train_seq_len,
+            batch_size=64,
+            num_steps=4000,
+            learning_rate=3e-4,
+            warmup_steps=400,
+            grad_clip=1.0,
+            device=device,
+            print_every=1000,
+        )
+        os.makedirs(os.path.dirname(model_path) if os.path.dirname(model_path) else ".", exist_ok=True)
+        torch.save(model.state_dict(), model_path)
+        print(f"Model saved to {model_path}")
+    else:
+        print("=" * 80)
+        print(f"Step 1: Loading Model from {model_path}")
+        print("=" * 80)
+        model = BernoulliTransformer(
+            max_seq_len=None,
+            d_model=16,
+            n_layers=1,
+            n_heads=1,
+            d_mlp=16,
+            use_prenorm=True,
+        )
+        model.load_state_dict(torch.load(model_path, map_location=device))
+        model = model.to(device)
+        print(f"Model loaded successfully from {model_path}")
+    
+    print("\n" + "=" * 80)
+    print("Step 2: Running Diagnostics")
+    print("=" * 80)
+    print(
+        f"Trials={num_trials} | context_len={context_length} | target_len={target_length} | "
+        f"posterior_samples={num_posterior_samples} | rollout_len={rollout_length_for_posterior}"
+    )
+    print(
+        f"p_rollouts={num_p_rollouts} (len={p_rollout_length}) | "
+        f"target_mode={target_mode} | p_range=[{p_min}, {p_max}]"
+    )
+    
+    rng = np.random.default_rng(seed)
+    torch.manual_seed(seed)
+    results = []
+    eps = 1e-300
+    
+    for trial in range(num_trials):
+        true_p = float(rng.uniform(p_min, p_max))
+        context = (torch.rand(context_length, device=device) < true_p).long()
+        target = _make_target_string(rng, target_length, target_mode, true_p, device)
+        
+        context_cpu = context.cpu()
+        target_cpu = target.cpu()
+        true_prob = compute_string_probability_analytical(target_cpu, context_cpu)
+        
+        estimate, std_error, p_mean, p_std, coef_var = estimate_posterior_sampling_method_fast(
+            model=model,
+            context=context,
+            target_string=target,
+            num_samples=num_posterior_samples,
+            rollout_length=rollout_length_for_posterior,
+            device=device,
+        )
+        
+        p_rollout_mean, p_rollout_std = estimate_posterior_mean_from_rollouts(
+            model=model,
+            context=context,
+            num_rollouts=num_p_rollouts,
+            rollout_length=p_rollout_length,
+            device=device,
+        )
+        
+        bayes_mean = get_bayes_optimal_prediction(context_cpu, alpha=1.0, beta=1.0)
+        
+        denom = true_prob if true_prob > 0 else eps
+        rel_error = (estimate - true_prob) / denom
+        log10_ratio = math.log10(max(estimate, eps)) - math.log10(max(true_prob, eps))
+        
+        results.append({
+            "trial": trial,
+            "true_p": true_p,
+            "context_ones": int(context_cpu.sum().item()),
+            "context_len": int(context_length),
+            "target_ones": int(target_cpu.sum().item()),
+            "target_len": int(target_length),
+            "true_prob": true_prob,
+            "estimate": estimate,
+            "std_error": std_error,
+            "coef_var": coef_var,
+            "rel_error": rel_error,
+            "log10_ratio": log10_ratio,
+            "p_rollout_mean": p_rollout_mean,
+            "p_rollout_std": p_rollout_std,
+            "bayes_mean": bayes_mean,
+            "target_mode": target_mode,
+        })
+        
+        if print_every and (trial + 1) % print_every == 0:
+            print(f"  Completed {trial + 1}/{num_trials} trials")
+    
+    os.makedirs(plot_dir, exist_ok=True)
+    
+    csv_path = os.path.join(plot_dir, "bernoulli_posterior_sampling_diagnostics.csv")
+    with open(csv_path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=list(results[0].keys()))
+        writer.writeheader()
+        writer.writerows(results)
+    
+    true_probs = np.array([r["true_prob"] for r in results], dtype=np.float64)
+    estimates = np.array([r["estimate"] for r in results], dtype=np.float64)
+    log10_ratio = np.array([r["log10_ratio"] for r in results], dtype=np.float64)
+    abs_log10_ratio = np.abs(log10_ratio)
+    rel_error = np.array([r["rel_error"] for r in results], dtype=np.float64)
+    abs_rel_error = np.abs(rel_error)
+    p_rollout_mean = np.array([r["p_rollout_mean"] for r in results], dtype=np.float64)
+    bayes_mean = np.array([r["bayes_mean"] for r in results], dtype=np.float64)
+    coef_var = np.array([r["coef_var"] for r in results], dtype=np.float64)
+    
+    def pct(arr: np.ndarray, q: float) -> float:
+        return float(np.percentile(arr, q))
+    
+    p_mean_error = p_rollout_mean - bayes_mean
+    p_mse = float(np.mean(p_mean_error ** 2))
+    p_corr = float(np.corrcoef(p_rollout_mean, bayes_mean)[0, 1]) if len(results) > 1 else 0.0
+    log_corr = float(np.corrcoef(np.log10(true_probs + eps), np.log10(estimates + eps))[0, 1]) if len(results) > 1 else 0.0
+    
+    print("\n" + "=" * 80)
+    print("Diagnostics Summary")
+    print("=" * 80)
+    print(f"Results saved to: {csv_path}")
+    print(f"Posterior sampling log10 ratio mean={log10_ratio.mean():.3f}, std={log10_ratio.std():.3f}")
+    print(
+        "Abs log10 ratio percentiles: "
+        f"p50={pct(abs_log10_ratio, 50):.3f}, "
+        f"p90={pct(abs_log10_ratio, 90):.3f}, "
+        f"p95={pct(abs_log10_ratio, 95):.3f}"
+    )
+    print(
+        "Abs relative error percentiles: "
+        f"p50={pct(abs_rel_error, 50):.3f}, "
+        f"p90={pct(abs_rel_error, 90):.3f}, "
+        f"p95={pct(abs_rel_error, 95):.3f}"
+    )
+    print(f"Posterior CV mean={float(np.mean(coef_var)):.2f}, median={float(np.median(coef_var)):.2f}")
+    print(f"Posterior mean p error: MSE={p_mse:.6f}, corr={p_corr:.4f}")
+    print(f"log10(true_prob) vs log10(estimate) corr={log_corr:.4f}")
+    
+    # Plot 1: log10(true) vs log10(estimate)
+    fig, ax = plt.subplots(figsize=(7, 6))
+    x = np.log10(true_probs + eps)
+    y = np.log10(estimates + eps)
+    ax.scatter(x, y, alpha=0.6, s=25)
+    min_val = min(x.min(), y.min())
+    max_val = max(x.max(), y.max())
+    ax.plot([min_val, max_val], [min_val, max_val], "r--", linewidth=2)
+    ax.set_xlabel("log10(true_prob)")
+    ax.set_ylabel("log10(estimate)")
+    ax.set_title("Posterior Sampling: True vs Estimated Probability")
+    ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plot_path = os.path.join(plot_dir, "bernoulli_diag_true_vs_est.png")
+    plt.savefig(plot_path, dpi=150, bbox_inches="tight")
+    plt.close()
+    
+    # Plot 2: log10 ratio histogram
+    fig, ax = plt.subplots(figsize=(7, 5))
+    ax.hist(log10_ratio, bins=30, color="steelblue", alpha=0.8, edgecolor="black")
+    ax.axvline(0, color="red", linestyle="--", linewidth=2)
+    ax.set_xlabel("log10(estimate / true_prob)")
+    ax.set_ylabel("Count")
+    ax.set_title("Posterior Sampling Error Distribution")
+    ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plot_path = os.path.join(plot_dir, "bernoulli_diag_log10_ratio_hist.png")
+    plt.savefig(plot_path, dpi=150, bbox_inches="tight")
+    plt.close()
+    
+    # Plot 3: posterior mean vs Bayes mean
+    fig, ax = plt.subplots(figsize=(7, 5))
+    ax.scatter(bayes_mean, p_rollout_mean, alpha=0.6, s=25)
+    ax.plot([0, 1], [0, 1], "r--", linewidth=2)
+    ax.set_xlabel("Bayes posterior mean")
+    ax.set_ylabel("Model rollout mean")
+    ax.set_title("Posterior Mean: Model vs Bayes")
+    ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plot_path = os.path.join(plot_dir, "bernoulli_diag_posterior_mean.png")
+    plt.savefig(plot_path, dpi=150, bbox_inches="tight")
+    plt.close()
+    
+    # Plot 4: absolute log10 error vs true p
+    fig, ax = plt.subplots(figsize=(7, 5))
+    ax.scatter([r["true_p"] for r in results], abs_log10_ratio, alpha=0.6, s=25)
+    ax.set_xlabel("True p")
+    ax.set_ylabel("abs(log10 ratio)")
+    ax.set_title("Error vs True p")
+    ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plot_path = os.path.join(plot_dir, "bernoulli_diag_error_vs_true_p.png")
+    plt.savefig(plot_path, dpi=150, bbox_inches="tight")
+    plt.close()
+
+
+# =====================
 #  Main Demo
 # =====================
 
 def run_demo(
     model_path: Optional[str] = None,
     train_model: bool = True,
+    train_seq_len: int = 256,
     context_length: int = 50,
     target_string_length: int = 50,
     num_rollouts: int = 10000,
@@ -931,7 +1284,7 @@ def run_demo(
         )
         model = train_bernoulli_transformer(
             model,
-            seq_len=256,
+            seq_len=train_seq_len,
             batch_size=64,
             num_steps=4000,  # Reduced to 4k steps for fast execution
             learning_rate=3e-4,
@@ -1073,6 +1426,102 @@ def run_demo(
     }
 
 
+def run_posterior_compare_only(
+    model_path: Optional[str] = None,
+    train_model: bool = True,
+    train_seq_len: int = 256,
+    context_length: int = 50,
+    target_string_length: int = 50,
+    num_posterior_samples: int = 100,
+    rollout_length_for_posterior: int = 1000,
+    device: str = "cuda" if torch.cuda.is_available() else "cpu",
+):
+    """Run only the posterior comparison plot for a single context/target."""
+    default_model_path = "checkpoints/bernoulli_transformer.pt"
+    if model_path is None:
+        model_path = default_model_path
+    
+    if train_model and os.path.exists(model_path):
+        print(f"Found existing checkpoint at {model_path}")
+        print("Set --no-train to skip training, or delete checkpoint to retrain")
+        train_model = False
+    
+    if train_model:
+        print("=" * 80)
+        print("Step 1: Training Transformer")
+        print("=" * 80)
+        model = BernoulliTransformer(
+            max_seq_len=None,
+            d_model=16,
+            n_layers=1,
+            n_heads=1,
+            d_mlp=16,
+            use_prenorm=True,
+        )
+        model = train_bernoulli_transformer(
+            model,
+            seq_len=train_seq_len,
+            batch_size=64,
+            num_steps=4000,
+            learning_rate=3e-4,
+            warmup_steps=400,
+            grad_clip=1.0,
+            device=device,
+            print_every=1000,
+        )
+        os.makedirs(os.path.dirname(model_path) if os.path.dirname(model_path) else ".", exist_ok=True)
+        torch.save(model.state_dict(), model_path)
+        print(f"Model saved to {model_path}")
+    else:
+        print("=" * 80)
+        print(f"Step 1: Loading Model from {model_path}")
+        print("=" * 80)
+        model = BernoulliTransformer(
+            max_seq_len=None,
+            d_model=16,
+            n_layers=1,
+            n_heads=1,
+            d_mlp=16,
+            use_prenorm=True,
+        )
+        model.load_state_dict(torch.load(model_path, map_location=device))
+        model = model.to(device)
+        print(f"Model loaded successfully from {model_path}")
+    
+    print("\n" + "=" * 80)
+    print("Step 2: Generating Context/Target")
+    print("=" * 80)
+    
+    true_p = 0.6
+    context = (torch.rand(context_length) < true_p).long()
+    n_ones = context.sum().item()
+    n_zeros = len(context) - n_ones
+    print(f"True p: {true_p}")
+    print(f"Context: {n_ones} ones, {n_zeros} zeros (length={len(context)})")
+    
+    target_string = torch.tensor([1, 0] * (target_string_length // 2))
+    if target_string_length % 2 == 1:
+        target_string = torch.cat([target_string, torch.tensor([1])])
+    k_target = target_string.sum().item()
+    print(f"Target string: {k_target} ones, {len(target_string) - k_target} zeros (length={len(target_string)})")
+    
+    print("\n" + "=" * 80)
+    print("Step 3: Posterior Sampling Comparison")
+    print("=" * 80)
+    estimate, std_error = estimate_posterior_sampling_method(
+        model,
+        context,
+        target_string,
+        num_samples=num_posterior_samples,
+        rollout_length=rollout_length_for_posterior,
+        device=device,
+        plot_path="plots/posterior_sampling_comparison.png",
+        print_every=5,
+    )
+    print(f"Estimate: {estimate:.8e}")
+    print(f"Std Error: {std_error:.8e}")
+
+
 if __name__ == "__main__":
     import argparse
     
@@ -1085,19 +1534,64 @@ if __name__ == "__main__":
     parser.add_argument("--num-posterior-samples", type=int, default=100, help="Number of posterior samples")
     parser.add_argument("--rollout-length", type=int, default=1000, help="Length of rollout for posterior sampling")
     parser.add_argument("--device", type=str, default=None, help="Device to use (cuda/cpu)")
+    parser.add_argument("--train-seq-len", type=int, default=256, help="Sequence length used during training")
+    parser.add_argument("--posterior-compare-only", action="store_true", help="Only run posterior sampling comparison")
+    parser.add_argument("--diagnostics", action="store_true", help="Run multi-trial diagnostics")
+    parser.add_argument("--num-trials", type=int, default=50, help="Number of diagnostic trials")
+    parser.add_argument("--target-mode", type=str, default="bernoulli", choices=["bernoulli", "balanced", "alternating", "uniform"], help="Target string mode")
+    parser.add_argument("--p-min", type=float, default=0.05, help="Minimum true p")
+    parser.add_argument("--p-max", type=float, default=0.95, help="Maximum true p")
+    parser.add_argument("--num-p-rollouts", type=int, default=200, help="Number of rollouts for posterior mean p")
+    parser.add_argument("--p-rollout-length", type=int, default=100, help="Rollout length for posterior mean p")
+    parser.add_argument("--seed", type=int, default=123, help="Random seed for diagnostics")
+    parser.add_argument("--plot-dir", type=str, default="plots", help="Directory for diagnostic plots")
+    parser.add_argument("--print-every", type=int, default=10, help="Print progress every N trials")
     
     args = parser.parse_args()
     
     device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
     
-    run_demo(
-        model_path=args.model_path,
-        train_model=not args.no_train,
-        context_length=args.context_length,
-        target_string_length=args.target_length,
-        num_rollouts=args.num_rollouts,
-        num_posterior_samples=args.num_posterior_samples,
-        rollout_length_for_posterior=args.rollout_length,
-        device=device,
-        skip_rollout_method=True,  # Skip direct rollout method
-    )
+    if args.posterior_compare_only:
+        run_posterior_compare_only(
+            model_path=args.model_path,
+            train_model=not args.no_train,
+            train_seq_len=args.train_seq_len,
+            context_length=args.context_length,
+            target_string_length=args.target_length,
+            num_posterior_samples=args.num_posterior_samples,
+            rollout_length_for_posterior=args.rollout_length,
+            device=device,
+        )
+    elif args.diagnostics:
+        run_diagnostics(
+            model_path=args.model_path,
+            train_model=not args.no_train,
+            train_seq_len=args.train_seq_len,
+            num_trials=args.num_trials,
+            context_length=args.context_length,
+            target_length=args.target_length,
+            num_posterior_samples=args.num_posterior_samples,
+            rollout_length_for_posterior=args.rollout_length,
+            num_p_rollouts=args.num_p_rollouts,
+            p_rollout_length=args.p_rollout_length,
+            target_mode=args.target_mode,
+            p_min=args.p_min,
+            p_max=args.p_max,
+            seed=args.seed,
+            device=device,
+            plot_dir=args.plot_dir,
+            print_every=args.print_every,
+        )
+    else:
+        run_demo(
+            model_path=args.model_path,
+            train_model=not args.no_train,
+            train_seq_len=args.train_seq_len,
+            context_length=args.context_length,
+            target_string_length=args.target_length,
+            num_rollouts=args.num_rollouts,
+            num_posterior_samples=args.num_posterior_samples,
+            rollout_length_for_posterior=args.rollout_length,
+            device=device,
+            skip_rollout_method=True,  # Skip direct rollout method
+        )
