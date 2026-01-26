@@ -2,11 +2,13 @@
 
 \usepackage[margin=1in]{geometry}
 \usepackage{amsmath,amssymb,amsthm,mathtools}
+\usepackage{graphicx}
 
 \newcommand{\E}{\mathbb{E}}
 \newcommand{\Pp}{\mathbb{P}}
 \newcommand{\ind}{\mathbf{1}}
 \newcommand{\KL}{\mathrm{KL}}
+\newcommand{\Var}{\mathrm{Var}}
 
 \theoremstyle{plain}
 \newtheorem{theorem}{Theorem}
@@ -161,7 +163,7 @@ Taking expectations and using $\E[Z]=\mu$ gives
 where the last inequality uses $1+u\le e^u$.
 \end{proof}
 
-\begin{theorem}[Multiplicative Chernoff bound for $[0,1]$ variables]
+\begin{theorem}[Multiplicative Chernoff bound for unit-interval variables]
 \label{thm:chernoff}
 Let $Z_1,\dots,Z_M$ be independent random variables with $Z_i\in[0,1]$ and $\E[Z_i]=\mu$.
 Let $\bar Z := \frac{1}{M}\sum_{i=1}^M Z_i$.
@@ -468,6 +470,64 @@ A direct analogue is to take $A$ to be a small neighborhood (e.g.\ an $\varepsil
 When the one-step observation likelihood/density is uniformly bounded above, an analogue of Lemma~\ref{lem:hmm-eta} typically yields $b\le (\text{const}\cdot \varepsilon)^m$ and therefore an exponential separation in $m$.
 \end{remark}
 
+\section{Markov-chain experiment}
+We repeated the Bernoulli experiment for a two-state Markov chain with parameters
+$p=\Pp(x_n=1\mid x_{n-1}=0)$ and $q=\Pp(x_n=0\mid x_{n-1}=1)$.
+The prior is independent Beta$(1,1)$ on both $p$ and $q$, and the initial state is sampled from a Bernoulli$(1/2)$.
+The Bayes predictor updates the transition counts $(n_{01}, n_{00}, n_{10}, n_{11})$ and uses the posterior means
+$\E[p\mid D]$ and $\E[q\mid D]$ (conditioning on the last bit).
+
+\paragraph{Transformer and training.}
+We trained a small decoder-only transformer with
+$d_{\text{model}}=32$, $n_{\text{layers}}=2$, $n_{\text{heads}}=4$, and $d_{\text{mlp}}=64$,
+sequence length $256$, batch size $64$, and $12{,}000$ total steps
+(initial $4{,}000$ plus $8{,}000$ continuation),
+with AdamW ($\text{lr}=3\cdot 10^{-4}$, $400$ warmup steps).
+Smaller configs (e.g.\ $d_{\text{model}}=16$, $n_{\text{layers}}=1$ or $2$) produced noticeably worse Bayes alignment;
+the above was the smallest configuration with stable posterior-sampling diagnostics.
+
+\paragraph{Model vs.\ Bayes prediction.}
+On $100$ random contexts of length $60$, the model achieved
+$\text{MSE}=1.53\times 10^{-2}$ vs.\ Bayes $\text{MSE}=7.54\times 10^{-3}$
+for next-bit prediction, a ratio of $2.03$.
+Figure~\ref{fig:markov-mse} summarizes the comparison.
+
+\paragraph{Rare-event estimation.}
+For an alternating target string of length $60$ and a context of length $60$,
+the analytical probability was
+$\Pp(\text{target}\mid D)=4.91\times 10^{-16}$.
+Posterior sampling with $80$ samples and rollout length $400$ estimated
+$1.99\times 10^{-16}\pm 1.70\times 10^{-16}$.
+By contrast, naive rollout would require on the order of $1/q\approx 2.0\times 10^{15}$
+rollouts to see a single hit in expectation.
+
+\paragraph{Diagnostics.}
+Across $15$ random trials, the correlation between $\log_{10}(\text{true})$ and
+$\log_{10}(\text{estimate})$ was $0.957$, and the posterior-mean correlations were
+$0.898$ for $p$ and $0.929$ for $q$.
+Figures~\ref{fig:markov-posterior}--\ref{fig:markov-diagnostics} show representative plots.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.92\linewidth]{../plots/markov_model_vs_bayes_comparison.png}
+  \caption{Markov transformer vs.\ Bayes predictor for next-bit probabilities (100 contexts, length 60).}
+  \label{fig:markov-mse}
+\end{figure}
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.92\linewidth]{../plots/markov_posterior_sampling_comparison.png}
+  \caption{Posterior sampling check: histograms of inferred $(p,q)$ vs.\ analytical Beta posteriors.}
+  \label{fig:markov-posterior}
+\end{figure}
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.92\linewidth]{../plots/markov_diag_L2_D32_H4/markov_diag_true_vs_est.png}
+  \caption{Diagnostics: $\log_{10}(\text{true probability})$ vs.\ $\log_{10}(\text{posterior-sampling estimate})$ over 15 trials.}
+  \label{fig:markov-diagnostics}
+\end{figure}
+
 \section{Executive summary of the main message}
 Let $q=\Pp(A\mid D)=\E_{\theta\sim\pi(\cdot\mid D)}[f(\theta)]$ with $f(\theta)=\Pp_\theta(A\mid D)$.
 
@@ -483,4 +543,3 @@ Thus the \textbf{sample-count improvement factor} is $\Theta(1/b)$, which can be
 \end{itemize}
 
 \end{document}
-

@@ -56,6 +56,14 @@ gradient_results.json
 experiment_metadata.json
 analysis_results.json
 
+# LaTeX build artifacts
+*.aux
+*.out
+*.toc
+*.fls
+*.fdb_latexmk
+*.synctex.gz
+
 # Experiment checkpoints
 checkpoints_M*/
 
