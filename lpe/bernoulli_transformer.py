@@ -43,7 +43,7 @@ class TransformerBlock(nn.Module):
             nn.Linear(d_mlp, d_model),
         )
     
-    def forward(self, x: torch.Tensor, attn_mask: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, attn_mask: Optional[torch.Tensor]) -> torch.Tensor:
         # x: (B, T, d_model)
         if self.use_prenorm:
             # Pre-layer-norm: norm before attention/MLP
@@ -73,6 +73,10 @@ class BernoulliTransformer(nn.Module):
     
     Note: Without positional encoding, there's no architectural limit on sequence length.
     max_seq_len is optional and only used for warnings/practical limits (memory, etc.).
+
+    attention_mode:
+      - "causal": standard autoregressive causal attention
+      - "set": full attention + mean pooling (permutation-invariant)
     """
     
     def __init__(
@@ -83,11 +87,13 @@ class BernoulliTransformer(nn.Module):
         n_heads: int = 1,  # Minimal config for Bernoulli task
         d_mlp: int = 16,  # Minimal config for Bernoulli task
         use_prenorm: bool = True,
+        attention_mode: str = "causal",
     ):
         super().__init__()
         self.max_seq_len = max_seq_len  # Optional: used for warnings/practical limits
         self.d_model = d_model
         self.use_prenorm = use_prenorm
+        self.attention_mode = attention_mode
         
         # Embedding for binary tokens (0 and 1)
         # Use linear projection similar to ic_regression.py style
@@ -103,9 +109,12 @@ class BernoulliTransformer(nn.Module):
         self.ln_f = nn.LayerNorm(d_model)
         self.output_proj = nn.Linear(d_model, 2)  # 2 logits for 0 and 1
         
-        # Note: Causal mask is now generated dynamically in forward() to support variable-length sequences
+        # Note: Attention masks are generated dynamically in forward() to support variable-length sequences
         
         self._init_parameters()
+
+        if self.attention_mode not in {"causal", "set"}:
+            raise ValueError(f"Unknown attention_mode '{self.attention_mode}'. Expected 'causal' or 'set'.")
     
     def _init_parameters(self):
         """Initialize parameters matching ic_regression.py style."""
@@ -121,10 +130,21 @@ class BernoulliTransformer(nn.Module):
                     nn.init.normal_(m.weight, mean=0.0, std=0.02)
                     nn.init.zeros_(m.bias)
     
+    def _build_attention_mask(self, seq_len: int, device: torch.device) -> Optional[torch.Tensor]:
+        if self.attention_mode == "causal":
+            # For PyTorch's MultiheadAttention: attn_mask[i, j] = True means position i cannot attend to position j
+            return torch.triu(torch.ones(seq_len, seq_len, dtype=torch.bool, device=device), diagonal=1)
+        if self.attention_mode == "set":
+            # Full attention (permutation-equivariant without positional embeddings)
+            return None
+        return None
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
         x: (B, T) binary sequence
-        returns: (B, T, 2) logits for next token
+        returns:
+          - causal: (B, T, 2) logits for next token
+          - set: (B, 2) logits for next token (permutation-invariant pooling)
         """
         B, T = x.shape
         
@@ -139,9 +159,7 @@ class BernoulliTransformer(nn.Module):
         # Embed tokens (no positional encoding)
         x = self.token_emb(x)  # (B, T, d_model)
         
-        # Generate causal mask dynamically
-        # For PyTorch's MultiheadAttention: attn_mask[i, j] = True means position i cannot attend to position j
-        mask = torch.triu(torch.ones(T, T, dtype=torch.bool, device=x.device), diagonal=1)
+        mask = self._build_attention_mask(T, x.device)
         
         # Apply transformer blocks
         for block in self.blocks:
@@ -149,7 +167,13 @@ class BernoulliTransformer(nn.Module):
         
         # Final layer norm and output projection
         x = self.ln_f(x)
-        logits = self.output_proj(x)  # (B, T, 2)
+        if self.attention_mode == "set":
+            if T == 0:
+                raise ValueError("Empty sequence is not supported in set attention mode.")
+            pooled = x.mean(dim=1)  # (B, d_model), permutation-invariant pooling
+            logits = self.output_proj(pooled)  # (B, 2)
+        else:
+            logits = self.output_proj(x)  # (B, T, 2)
         
         return logits
     
@@ -160,7 +184,9 @@ class BernoulliTransformer(nn.Module):
         x: (B, T) binary sequence
         returns: (B, 2) logits for next token
         """
-        logits = self.forward(x)  # (B, T, 2)
+        logits = self.forward(x)
+        if logits.dim() == 2:
+            return logits
         return logits[:, -1, :]  # (B, 2)
     
     def sample(self, x: torch.Tensor, temperature: float = 1.0) -> torch.Tensor:
@@ -259,6 +285,29 @@ class BernoulliDataset(Dataset):
         return sequence
 
 
+class BernoulliContextTargetDataset(Dataset):
+    """Dataset for permutation-invariant training: context + next token target."""
+
+    def __init__(self, context_len: int, num_samples: int):
+        self.context_len = context_len
+        self.num_samples = num_samples
+
+    def __len__(self):
+        return self.num_samples
+
+    def __getitem__(self, idx):
+        # Sample p ~ Beta(1,1) (uniform on [0,1])
+        p = torch.rand(1).item()
+
+        # Sample context from Bernoulli(p)
+        context = (torch.rand(self.context_len) < p).long()
+
+        # Sample next token from Bernoulli(p)
+        target = (torch.rand(1) < p).long().squeeze(0)
+
+        return context, target
+
+
 def train_bernoulli_transformer(
     model: BernoulliTransformer,
     seq_len: int = 256,
@@ -281,9 +330,14 @@ def train_bernoulli_transformer(
     """
     model = model.to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=0.01)
-    
+
+    attention_mode = getattr(model, "attention_mode", "causal")
+
     # Create dataset and dataloader
-    dataset = BernoulliDataset(seq_len=seq_len, num_samples=100000)
+    if attention_mode == "set":
+        dataset = BernoulliContextTargetDataset(context_len=seq_len, num_samples=100000)
+    else:
+        dataset = BernoulliDataset(seq_len=seq_len, num_samples=100000)
     dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=0)
     
     model.train()
@@ -292,8 +346,12 @@ def train_bernoulli_transformer(
     data_iter = iter(dataloader)
     
     print(f"Training on device: {device}")
-    print(f"Sequence length: {seq_len}, Batch size: {batch_size}")
+    if attention_mode == "set":
+        print(f"Context length: {seq_len}, Batch size: {batch_size}")
+    else:
+        print(f"Sequence length: {seq_len}, Batch size: {batch_size}")
     print(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
+    print(f"Attention mode: {attention_mode}")
     print(f"Learning rate: {learning_rate}, Warmup steps: {warmup_steps}, Gradient clip: {grad_clip}")
     
     def get_lr(step):
@@ -309,17 +367,25 @@ def train_bernoulli_transformer(
             data_iter = iter(dataloader)
             sequences = next(data_iter)
         
-        sequences = sequences.to(device)  # (B, seq_len)
-        
-        # For autoregressive training, input is sequence[:-1], target is sequence[1:]
-        inputs = sequences[:, :-1]  # (B, seq_len-1)
-        targets = sequences[:, 1:]  # (B, seq_len-1)
-        
-        # Forward pass
-        logits = model.forward(inputs)  # (B, seq_len-1, 2)
-        
-        # Compute loss (cross entropy)
-        loss = F.cross_entropy(logits.reshape(-1, 2), targets.reshape(-1))
+        if attention_mode == "set":
+            contexts, targets = sequences
+            contexts = contexts.to(device)  # (B, context_len)
+            targets = targets.to(device)  # (B,)
+
+            logits = model.forward(contexts)  # (B, 2)
+            loss = F.cross_entropy(logits, targets)
+        else:
+            sequences = sequences.to(device)  # (B, seq_len)
+
+            # For autoregressive training, input is sequence[:-1], target is sequence[1:]
+            inputs = sequences[:, :-1]  # (B, seq_len-1)
+            targets = sequences[:, 1:]  # (B, seq_len-1)
+
+            # Forward pass
+            logits = model.forward(inputs)  # (B, seq_len-1, 2)
+
+            # Compute loss (cross entropy)
+            loss = F.cross_entropy(logits.reshape(-1, 2), targets.reshape(-1))
         
         # Backward pass
         optimizer.zero_grad()
@@ -779,7 +845,7 @@ def estimate_posterior_sampling_method(
             f_values.append(f_p)
             
             # Print progress
-            if (i + 1) % print_every == 0 or (i + 1) == num_samples:
+            if print_every and ((i + 1) % print_every == 0 or (i + 1) == num_samples):
                 current_estimate = np.mean(f_values)
                 current_std = np.std(f_values) / math.sqrt(len(f_values)) if len(f_values) > 1 else 0.0
                 print(f"  Progress: {i+1}/{num_samples} samples, current estimate: {current_estimate:.8e} ± {current_std:.8e}")
@@ -988,7 +1054,7 @@ def _make_target_string(
 def run_diagnostics(
     model_path: Optional[str] = None,
     train_model: bool = True,
-    train_seq_len: int = 256,
+    train_seq_len: int = 1000,
     num_trials: int = 50,
     context_length: int = 50,
     target_length: int = 50,
@@ -1003,6 +1069,8 @@ def run_diagnostics(
     device: str = "cuda" if torch.cuda.is_available() else "cpu",
     plot_dir: str = "plots",
     print_every: int = 10,
+    attention_mode: str = "causal",
+    posterior_plot_path: Optional[str] = None,
 ) -> None:
     """Run repeated trials to diagnose posterior sampling accuracy."""
     # Step 1: Train or load model
@@ -1026,6 +1094,7 @@ def run_diagnostics(
             n_heads=1,
             d_mlp=16,
             use_prenorm=True,
+            attention_mode=attention_mode,
         )
         model = train_bernoulli_transformer(
             model,
@@ -1052,6 +1121,7 @@ def run_diagnostics(
             n_heads=1,
             d_mlp=16,
             use_prenorm=True,
+            attention_mode=attention_mode,
         )
         model.load_state_dict(torch.load(model_path, map_location=device))
         model = model.to(device)
@@ -1091,6 +1161,19 @@ def run_diagnostics(
             rollout_length=rollout_length_for_posterior,
             device=device,
         )
+
+        if trial == 0 and posterior_plot_path is not None:
+            estimate_posterior_sampling_method(
+                model=model,
+                context=context,
+                target_string=target,
+                num_samples=num_posterior_samples,
+                rollout_length=rollout_length_for_posterior,
+                device=device,
+                plot_path=posterior_plot_path,
+                rollout_fraction_plot_path=None,
+                print_every=0,
+            )
         
         p_rollout_mean, p_rollout_std = estimate_posterior_mean_from_rollouts(
             model=model,
@@ -1238,7 +1321,7 @@ def run_diagnostics(
 def run_demo(
     model_path: Optional[str] = None,
     train_model: bool = True,
-    train_seq_len: int = 256,
+    train_seq_len: int = 1000,
     context_length: int = 50,
     target_string_length: int = 50,
     num_rollouts: int = 10000,
@@ -1246,6 +1329,7 @@ def run_demo(
     rollout_length_for_posterior: int = 1000,
     device: str = "cuda" if torch.cuda.is_available() else "cpu",
     skip_rollout_method: bool = True,
+    attention_mode: str = "causal",
 ):
     """
     Run the full demonstration.
@@ -1281,6 +1365,7 @@ def run_demo(
             n_heads=1,
             d_mlp=16,
             use_prenorm=True,
+            attention_mode=attention_mode,
         )
         model = train_bernoulli_transformer(
             model,
@@ -1308,6 +1393,7 @@ def run_demo(
             n_heads=1,
             d_mlp=16,
             use_prenorm=True,
+            attention_mode=attention_mode,
         )
         model.load_state_dict(torch.load(model_path, map_location=device))
         model = model.to(device)
@@ -1429,12 +1515,13 @@ def run_demo(
 def run_posterior_compare_only(
     model_path: Optional[str] = None,
     train_model: bool = True,
-    train_seq_len: int = 256,
+    train_seq_len: int = 1000,
     context_length: int = 50,
     target_string_length: int = 50,
     num_posterior_samples: int = 100,
     rollout_length_for_posterior: int = 1000,
     device: str = "cuda" if torch.cuda.is_available() else "cpu",
+    attention_mode: str = "causal",
 ):
     """Run only the posterior comparison plot for a single context/target."""
     default_model_path = "checkpoints/bernoulli_transformer.pt"
@@ -1457,6 +1544,7 @@ def run_posterior_compare_only(
             n_heads=1,
             d_mlp=16,
             use_prenorm=True,
+            attention_mode=attention_mode,
         )
         model = train_bernoulli_transformer(
             model,
@@ -1483,6 +1571,7 @@ def run_posterior_compare_only(
             n_heads=1,
             d_mlp=16,
             use_prenorm=True,
+            attention_mode=attention_mode,
         )
         model.load_state_dict(torch.load(model_path, map_location=device))
         model = model.to(device)
@@ -1534,7 +1623,7 @@ if __name__ == "__main__":
     parser.add_argument("--num-posterior-samples", type=int, default=100, help="Number of posterior samples")
     parser.add_argument("--rollout-length", type=int, default=1000, help="Length of rollout for posterior sampling")
     parser.add_argument("--device", type=str, default=None, help="Device to use (cuda/cpu)")
-    parser.add_argument("--train-seq-len", type=int, default=256, help="Sequence length used during training")
+    parser.add_argument("--train-seq-len", type=int, default=1000, help="Sequence length used during training")
     parser.add_argument("--posterior-compare-only", action="store_true", help="Only run posterior sampling comparison")
     parser.add_argument("--diagnostics", action="store_true", help="Run multi-trial diagnostics")
     parser.add_argument("--num-trials", type=int, default=50, help="Number of diagnostic trials")
@@ -1545,7 +1634,20 @@ if __name__ == "__main__":
     parser.add_argument("--p-rollout-length", type=int, default=100, help="Rollout length for posterior mean p")
     parser.add_argument("--seed", type=int, default=123, help="Random seed for diagnostics")
     parser.add_argument("--plot-dir", type=str, default="plots", help="Directory for diagnostic plots")
+    parser.add_argument(
+        "--posterior-plot-path",
+        type=str,
+        default=None,
+        help="Optional path for posterior vs analytical comparison plot (diagnostics only)",
+    )
     parser.add_argument("--print-every", type=int, default=10, help="Print progress every N trials")
+    parser.add_argument(
+        "--attention-mode",
+        type=str,
+        default="causal",
+        choices=["causal", "set"],
+        help="Attention mode: causal (default) or permutation-invariant set",
+    )
     
     args = parser.parse_args()
     
@@ -1561,6 +1663,7 @@ if __name__ == "__main__":
             num_posterior_samples=args.num_posterior_samples,
             rollout_length_for_posterior=args.rollout_length,
             device=device,
+            attention_mode=args.attention_mode,
         )
     elif args.diagnostics:
         run_diagnostics(
@@ -1581,6 +1684,8 @@ if __name__ == "__main__":
             device=device,
             plot_dir=args.plot_dir,
             print_every=args.print_every,
+            attention_mode=args.attention_mode,
+            posterior_plot_path=args.posterior_plot_path,
         )
     else:
         run_demo(
@@ -1594,4 +1699,5 @@ if __name__ == "__main__":
             rollout_length_for_posterior=args.rollout_length,
             device=device,
             skip_rollout_method=True,  # Skip direct rollout method
+            attention_mode=args.attention_mode,
         )

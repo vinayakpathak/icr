@@ -315,6 +315,59 @@ The script automatically:
 
 **Note**: When your server IP/port changes, just update `~/.ssh/config` - the script will automatically pick up the new details.
 
+## Syncing Sensitive Files (Laptop <-> Server)
+
+Your code lives in GitHub and checkpoints live in R2, but secrets/configs are **not** in git. To make server teardown/startup seamless, use the scripts in `scripts/` to **pull** sensitive files from the old server to your laptop and **push** them to the new server.
+
+### 1) Update the manifest
+
+Edit `scripts/sensitive_paths.txt` and list every secret/config file you want preserved:
+
+- **Relative paths** are resolved from the repo root (recommended).
+- **Absolute paths** (starting with `/`) are allowed for things like `/root/.aws/credentials`.
+- One path per line; comments start with `#`.
+
+Examples:
+```
+.env
+.env.local
+r2_config.json
+configs/local/
+/root/.aws/credentials
+```
+
+### 2) Download from the current server (run on your laptop)
+
+```
+./scripts/sync_sensitive_from_server.sh \
+  --host vast-gpu \
+  --remote-root /root/icr \
+  --backup-root ~/icr_sensitive_backup
+```
+
+This creates:
+
+- `~/icr_sensitive_backup/repo/` for repo-relative secrets
+- `~/icr_sensitive_backup/absolute/` for absolute-path secrets
+
+### 3) Restore to a new server (run on your laptop)
+
+After you spin up a new server and clone this repo to `/root/icr`:
+
+```
+./scripts/sync_sensitive_to_server.sh \
+  --host vast-gpu-new \
+  --remote-root /root/icr \
+  --backup-root ~/icr_sensitive_backup
+```
+
+### Notes
+
+- Requires `rsync` + `ssh` on your laptop.
+- Only the paths in `scripts/sensitive_paths.txt` are transferred—keep it updated.
+- If your server host/IP changes, update `~/.ssh/config` and re-run.
+- Absolute-path restores require permission to write to those locations (root on Vast).
+
 ## Output Files
 
 - **Checkpoints**: Saved in `checkpoints/checkpoints_M{M}/` directories
@@ -346,4 +399,3 @@ If you use this code in your research, please cite the relevant papers on in-con
 ## Contact
 
 [Contact information if applicable]
-

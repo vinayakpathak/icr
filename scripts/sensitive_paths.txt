@@ -1,0 +1,22 @@
+# Paths to sync that are NOT stored in git.
+#
+# Rules:
+# - One path per line.
+# - Relative paths are resolved from the repo root.
+# - Absolute paths (starting with /) are allowed and will be restored to the
+#   same absolute location on the server.
+# - Blank lines and lines starting with # are ignored.
+# - Globs are not expanded; list explicit files or directories.
+#
+# Auto-detected on this server (review and adjust):
+r2_config.json
+/root/.vast_api_key
+/root/.ssh/authorized_keys
+#
+# Common examples (uncomment as needed):
+# .env
+# .env.local
+# configs/local/
+# secrets/
+# /root/.aws/credentials
+# /root/.ssh/id_rsa
