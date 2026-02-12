@@ -1,0 +1,766 @@
+\documentclass{article}
+
+% if you need to pass options to natbib, use, e.g.:
+%     \PassOptionsToPackage{numbers, compress}{natbib}
+% before loading neurips_2025
+
+% The authors should use one of these tracks.
+% Before accepting by the NeurIPS conference, select one of the options below.
+% 0. "default" for submission
+ \usepackage{neurips_2025}
+
+\usepackage[utf8]{inputenc} % allow utf-8 input
+\usepackage[T1]{fontenc}    % use 8-bit T1 fonts
+\usepackage{hyperref}       % hyperlinks
+\usepackage{url}            % simple URL typesetting
+\usepackage{booktabs}       % professional-quality tables
+\usepackage{amsfonts}       % blackboard math symbols
+\usepackage{nicefrac}       % compact symbols for 1/2, etc.
+\usepackage{microtype}      % microtypography
+\usepackage{xcolor}         % colors
+\usepackage{graphicx}
+\usepackage{amsmath,amssymb,amsthm}
+
+% --- theorem-like environments ---
+\newtheorem{assumption}{Assumption}
+\newtheorem{remark}{Remark}
+
+% --- convenient macros ---
+\newcommand{\E}{\mathbb E}
+\newcommand{\Cov}{\operatorname{Cov}}
+
+
+\title{Prompting as Posterior Tilting: Steering In-Context Bayesian Sequence Models}
+
+\author{%
+  David S.~Hippocampus\thanks{Use footnote for providing further information
+    about author (webpage, alternative address)---\emph{not} for acknowledging
+    funding agencies.} \\
+  Department of Computer Science\\
+  Cranberry-Lemon University\\
+  Pittsburgh, PA 15213 \\
+  \texttt{hippo@cs.cranberry-lemon.edu} \\
+}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+\end{abstract}
+
+
+\section{Introduction}
+
+We seek to steer a sequence model $\pi_\theta$ using a sequence of soft prompts $z_{1:m}$ to optimise a specific behaviour defined by a utility function $U$. Let $\mathcal{Y}$ be a finite, discrete vocabulary. Let $y_{1:n}$ be the \textbf{fixed context} which we may set to be the empty string, $n=0$. We denote the \textbf{continuation sequence} of length $N$ by $y_{n+1:n+N} \in \mathcal{Y}^N$. Let $z_{1:m}=(z_1,\dots,z_m)\in \mathcal Z^m, \mathcal Z\subseteq \mathbb R^d$ be a sequence of \textbf{soft prompts}. Let the \textbf{utility} $U:\mathcal Y^N\to\mathbb R$ be evaluated on the length-$N$ continuation $Y_{n+1:n+N}$. If desired, one may allow $U$ to depend on the fixed context $y_{1:n}$ as an additional argument.
+
+
+We define the \textbf{elicitation objective} $J(z_{1:m})$ as the expected utility of the continuation sequence $y_{n+1:n+N}$ \textit{under} $\pi_\theta$ conditional on the original context $y_{1:n}$ concatenated with the soft prompts $z_{1:m}$:
+\begin{equation}
+    J(z_{1:m}) := \mathbb{E}_{y_{n+1:n+N} \sim \pi_\theta(\cdot | y_{1:n}, z_{1:m})} [U(y_{n+1:n+N})].
+    \label{eq:J}
+\end{equation}
+Note that $\pi_\theta(\cdot \mid y_{1:n}, z_{1:m})$ is shorthand for $\pi_\theta(\cdot \mid \mathrm{embed}(y_{1:n}), z_{1:m})$.
+
+This elicitation objective allows for arbitrary, potentially \textbf{non-differentiable utilities}. Examples include (I asked Chatgpt for these examples, not ready to defend them):
+\begin{itemize}
+    \item \textbf{Logical Constraints:} $U(\cdot) = 1$ if the sequence is valid code that compiles, $0$ otherwise.
+    \item \textbf{Keyword Steering:} $U(\cdot) = 1$ if the sequence contains a specific term, $0$ otherwise.
+    \item \textbf{Reverse-cross entropy:} $U(\cdot) = \log \xi_{\text{Target}}(\cdot)$, forcing the model to find high-probability modes of a target distribution $\xi_{\text{Target}}$.
+\end{itemize}
+Optimizing $J(z_{1:m})$ is non-trivial because the expectation is taken over discrete continuation sequences sampled from the sequence model. We distinguish between two baselines for optimizing this objective:
+
+\paragraph{Case 1: Exact Summation.} 
+When the horizon $N$ and vocabulary size $|\mathcal{Y}|$ are sufficiently small (e.g., $N=4, |\mathcal{Y}|=2$), we can evaluate the expectation exactly by enumerating all possible sequences:
+\begin{equation}
+    J(z_{1:m}) = \sum_{y_{n+1:n+N} \in \mathcal{Y}^N} \pi_\theta(y_{n+1:n+N} | y_{1:n}, z_{1:m}) U(y_{n+1:n+N}).
+\end{equation}
+Since this sum is finite and deterministic, $J$ is fully differentiable. We can compute the gradient $\nabla_{z_{1:m}} J$ by standard backpropagation through the transformer’s probabilities $\pi_\theta$:
+\begin{equation}
+\boxed{
+\nabla_{z_{j}} J(z_{1:m}) = \sum_{y_{n+1:n+N} \in \mathcal{Y}^N} U(y_{n+1:n+N}) \nabla_{z_j} \pi_\theta(y_{n+1:n+N} | y_{1:n}, z_{1:m})
+}
+\label{eq:J_exact_gradient}    
+\end{equation}
+However, this use case is extremely limited as the cost scales exponentially with $N$. To perform a \textbf{single} gradient descent step, we need \textbf{$N \times |\mathcal{Y}|^N$ forward passes}.
+
+\paragraph{Case 2: Score Function Gradient.} 
+When enumeration is impossible, we must estimate the gradient via sampling. Using the log-derivative trick, we can express the gradient of $J$ as the \textbf{covariance} between the utility and the score function:
+\begin{equation}
+\boxed{
+\nabla_{z_j} J(z_{1:m}) = \text{Cov}_{Y_{n+1:n+N} \sim \pi_\theta(\cdot | y_{1:n}, z_{1:m})}\left( U(Y_{n+1:n+N}), \nabla_{z_j} \log \pi_\theta(Y_{n+1:n+N} | y_{1:n}, z_{1:m}) \right).
+}
+\label{eq:J_REINFORCE}
+\end{equation}
+To estimate this, we use the standard \textbf{score function gradient}. We generate $L$ parallel rollouts $y^{(1)}_{n+1:n+N}, \dots, y^{(L)}_{n+1:n+N}$ from the model $\pi_\theta(\cdot | y_{1:n}, z_{1:m})$ and compute:
+\begin{equation}
+    \nabla_{z_j} J(z_{1:m}, N) \approx \frac{1}{L} \sum_{l=1}^{L} (U(y^{(l)}_{n+1:n+N}) - b) \sum_{t=1}^N \nabla_{z_j} \log \pi_\theta(y_{n+t}^{(l)} |  y_{n+1:n+t-1}^{(l)}, y_{1:n}, z_{1:m}).
+\end{equation}
+Here, $b \in \mathbb{R}$ is a baseline used for variance reduction, typically defined as the average utility of the current batch, $b := \frac{1}{L} \sum_{l=1}^L U(y^{(l)}_{n+1:n+N})$.
+
+This approach is also computationally expensive but less than the exact enumeration above. Here, to perform a \textbf{single} gradient descent step with a batch size of $L$, we need \textbf{$N \times L$ forward passes}. 
+
+\paragraph{Access Requirements.} Note both Case 1 and Case 2 require backpropagating gradients through the transformer to compute $\nabla \pi_\theta$ or $\nabla \log \pi_\theta$. This explicitly precludes situations where we only have API access to the model (i.e., access only to text outputs or probabilities without gradient access).
+
+Our proposed method leverages the additional structure in \textbf{in-context Bayesian sequence models} to circumvent the computation and access barriers of these baselines: we sample from the sequence model's latent posterior once and optimize $z_{1:m}$ using a "tilt" operation that requires neither repeated autoregressive rollouts nor backpropagation through the transformer itself. In our proposed method, ahead of optimization we need $N\times L$ \textbf{forward passes} and then to perform a \textbf{single} gradient descent step, we need \textbf{zero forward passes.}
+
+\section{In-context Bayesian sequence models}
+Standard soft-prompting views the prompt as additional tokens in the attention mechanism or a matter of fine-tuning ???references???. With the additional structure in in-context Bayesian sequence model, we can afford a more foundational interpretation of prompting: we propose viewing these prompts as parameters of a pseudo-likelihood that "tilts" the latent posterior of the transformer. 
+
+\subsection{Setup}
+Let $\mathcal Y$ denote a finite vocabulary (discrete alphabet), and let
+$\mathcal B(\mathcal Y)=2^{\mathcal Y}$ be its $\sigma$-algebra.
+Write $\mathcal P(\mathcal Y)$ for the set of probability measures on
+$(\mathcal Y,\mathcal B(\mathcal Y))$.
+Since $\mathcal Y$ is finite, every $\tilde P\in\mathcal P(\mathcal Y)$ is uniquely determined by its
+probability mass function (pmf) $\tilde p:\mathcal Y\to[0,1]$ given by
+$\tilde p(y):=\tilde P(\{y\})$.
+Equivalently, we may represent categorical distributions as vectors in the simplex
+\[
+\Delta(\mathcal Y)
+:=
+\Big\{p:\mathcal Y\to[0,1]\ \ \text{s.t.}\ \ \sum_{y\in\mathcal Y} p(y)=1\Big\},
+\]
+and we freely identify
+\[
+\mathcal P(\mathcal Y)\ \cong\ \Delta(\mathcal Y),
+\qquad
+\tilde P(A)=\sum_{y\in A}\tilde p(y),\ \ A\subseteq \mathcal Y.
+\]
+Accordingly, integrals $\int_{\mathcal Y} f(y)\,\tilde P(dy)$ reduce to finite sums
+$\sum_{y\in\mathcal Y} f(y)\tilde p(y)$.
+
+Write $\mathcal Y^* := \bigcup_{n\ge 0} \mathcal Y^n$ for the set of all finite token sequences
+(including the empty sequence).
+A sequence model with parameters $\theta$ is a map that assigns to each history $y_{1:n}\in\mathcal Y^n$
+a categorical next-token distribution. We denote this map by
+\[
+\pi_\theta:\mathcal Y^* \to \Delta(\mathcal Y)
+\quad\text{(equivalently, }\pi_\theta:\mathcal Y^* \to \mathcal P(\mathcal Y)\text{)},
+\qquad
+y_{1:n} \mapsto \pi_\theta(\cdot \mid y_{1:n}).
+\]
+For $y\in\mathcal Y$ we write $\pi_\theta(y\mid y_{1:n})$ for the assigned probability, and for any
+$A\subseteq\mathcal Y$ we write $\pi_\theta(A\mid y_{1:n}) := \sum_{y\in A}\pi_\theta(y\mid y_{1:n})$.
+
+
+\subsection{In Context Bayesian}
+Throughout, we treat the trained sequence model $\pi_\theta$ as a fixed in-context predictor and study only its induced conditional distributions.
+How the parameters $\theta$ were obtained (architecture, training data, optimization, etc.) is outside the scope of this note.
+We now posit an \emph{In-Context Bayesian} property for the one-step predictive distribution, which is natural for meta-learned predictors such as PFNs.
+
+\begin{assumption}[(Exact) In-Context Bayesian]\label{ass:icl_exch}
+Fix a learned sequence model $\pi_\theta$. We say the model is \emph{in-context Bayesian} if there exists
+a prior $\Pi_0$ on the simplex $\Delta(\mathcal Y)$ such that, for every context $y_{1:n}$,
+the one-step predictive distribution admits the mixture representation
+\begin{equation}
+\pi_\theta(A \mid y_{1:n})
+=
+\int_{\Delta(\mathcal Y)} \tilde p(A)\,\Pi(d\tilde p \mid y_{1:n}),
+\qquad \forall A \subseteq \mathcal Y,
+\label{eq:predictive_mixture}
+\end{equation}
+where $\tilde p(A):=\sum_{y\in A}\tilde p(y)$ and $\Pi(\cdot \mid y_{1:n})$ is the posterior induced by $\Pi_0$:
+\[
+\Pi(d\tilde p \mid y_{1:n})
+\propto
+\left[\prod_{i=1}^n \tilde p(y_i)\right]\Pi_0(d\tilde p).
+\]
+\end{assumption}
+
+\begin{assumption}[(Asymptotic) In-Context Bayesian]\label{ass:icl_asy_exch}
+I can weaken the exact Bayesian assumption. To be written. 
+\end{assumption}
+
+Fix a continuation horizon $N\ge 1$ and write the continuation block as
+\[
+Y_{n+1:n+N}:=(Y_{n+1},\dots,Y_{n+N})\in\mathcal Y^N.
+\]
+When we need the model's joint distribution over such a length-$N$ continuation, we use the
+autoregressive factorization
+\[
+\pi_\theta(y_{n+1:n+N}\mid y_{1:n})
+:= \prod_{k=1}^N \pi_\theta(y_{n+k}\mid y_{1:n+k-1}).
+\]
+By abuse of notation, we also write $\pi_\theta(\cdot\mid y_{1:n})$ for the induced law on $\mathcal Y^N$
+defined via the autoregressive factorization; the intended sample space is determined by whether the argument
+is in $\mathcal Y$ or $\mathcal Y^N$ (equivalently, whether $A\subseteq\mathcal Y$ or $A\subseteq \mathcal Y^N)$).
+
+
+Under Assumption~\ref{ass:icl_exch}, conditional on $\tilde p$ the future tokens are i.i.d.,
+so the predictive distribution for the length-$N$ continuation is the mixture of product measures
+\begin{equation}
+\pi_\theta(A \mid y_{1:n})
+:=
+\int_{\Delta(\mathcal Y)} \tilde p^{\otimes N}(A)\,\Pi(d\tilde p \mid y_{1:n}),
+\qquad \forall A \subseteq \mathcal Y^N,
+\label{eq:predictive_mixture}
+\end{equation}
+where $\tilde p^{\otimes N}$ denotes the $N$-fold product measure on $\mathcal Y^N$ induced by $\tilde p$.
+This should not be confused with drawing $Y_{n+1},\dots,Y_{n+N}$ i.i.d.\ from the
+\emph{one-step} predictive $\pi_\theta(\cdot\mid y_{1:n})$ on $\mathcal Y$, which would instead
+produce the product law $\big[\pi_\theta(\cdot\mid y_{1:n})\big]^{\otimes N}$.
+
+
+Sampling from \eqref{eq:predictive_mixture} can be done either by
+(i) first drawing $\tilde p\sim \Pi(\cdot\mid y_{1:n})$ and then sampling
+$Y_{n+1:n+N}\mid \tilde p \sim \tilde p^{\otimes N}$,
+or equivalently by sequentially sampling $Y_{n+k}$ from the updated one-step predictive
+$\pi_\theta(\cdot\mid y_{1:n+k-1})$ after appending each newly sampled token
+(and hence updating the posterior $\Pi(\cdot\mid y_{1:n+k-1})$).
+
+
+
+\begin{remark}[Beyond exchangeability.]
+Because the term ``in-context learning" appears above, it may be very tempting to regard $\pi_\theta$ as an autoregressive sequence model in the flavor of a Transformer language model with weights $\theta$. However, as currently written, the sequence model in Assumption~\ref{ass:icl_exch} corresponds to a conditionally i.i.d.\ (hence exchangeable) model.
+For genuinely sequential dependence... the analogous latent object is a 
+history-dependent conditional pmf
+\[
+\tilde k: \mathcal Y^* \times \mathcal Y \to [0,1],
+\]
+where $\tilde k(y \mid h)$ denotes the probability of the next token $y$ given history $h$. 
+In this setting, the posterior updates via the chain-rule likelihood:
+\[
+\Pi(d\tilde k \mid y_{1:n})
+\propto
+\left[ \prod_{i=1}^n \tilde k(y_i \mid y_{1:i-1}) \right] \Pi_0^{k}(d\tilde k).
+\]
+We conjecture that the elicitation calculus developed below can be adapted to this setting, but we do not pursue this extension here, restricting our analysis to the exchangeable case.
+\end{remark}
+
+
+\section{Prompting In-context Bayesian sequence models is posterior modification}
+Henceforth, we assume the sequence model $\pi_\theta$ is in-context Bayesian. To optimize the elicitation objective $J$ in \eqref{eq:J}, we view the sequence of soft prompts $z_{1:m}$ as updates to the sequence model's posterior via a \emph{pseudo-likelihood} factor. This introduces a surrogate elictation objective. 
+
+Let $\phi:\mathcal Y\to\mathbb R^d$ be the sequence model's \textbf{input embedding map of tokens}. For a latent pmf $\tilde p\in\Delta(\mathcal Y)$ and design vector $z \in \mathcal Z$, we define the pseudo-likelihood:
+\begin{equation}
+q_\varepsilon(\tilde p;z):=\sum_{y\in\mathcal Y}\kappa_\varepsilon(z,\phi(y))\,\tilde p(y).
+\label{eq:q_eps_def}
+\end{equation}
+where $\kappa_\varepsilon(\cdot,\phi(y)) \ge 0$ and integrates to 1 over $z$. Given $z_{1:m}$, we define the \textbf{tilt factor} 
+$$
+W_\varepsilon(\tilde p; z_{1:m}) := \prod_{j=1}^m q_\varepsilon(\tilde p; z_j).
+$$
+The \textbf{tilted posterior} is defined as:
+\begin{equation}
+\Pi_\varepsilon(d\tilde p \mid y_{1:n}; z_{1:m})
+\propto
+W_\varepsilon(\tilde p;z_{1:m})\,\Pi(d\tilde p \mid y_{1:n}).
+\label{eq:posterior_augmented}
+\end{equation}
+
+Define the \textbf{tilted posterior predictive distribution} over $\mathcal Y^N$ by
+\begin{equation}
+P_\varepsilon(A \mid y_{1:n}; z_{1:m})
+:=
+\int_{\Delta(\mathcal Y)} \tilde p^{\otimes N}(A)\,
+\Pi_\varepsilon(d\tilde p \mid y_{1:n}; z_{1:m}),
+\qquad A\in\mathcal B(\mathcal Y^N).
+\label{eq:tilted_predictive}
+\end{equation}
+
+
+
+
+Define the\textbf{ surrogate elicitation objective} as the expected utility under
+$P_\varepsilon(\cdot\mid y_{1:n};z_{1:m})$:
+\begin{equation}
+J_\varepsilon(z_{1:m})
+:=
+\int_{\mathcal Y^N} U(y_{n+1:n+N})\,P_\varepsilon(dy_{n+1:n+N} \mid y_{1:n}; z_{1:m}).
+\label{eq:J_eps}
+\end{equation}
+For the surrogate elicitation objective $J_\eps$, we can implement the score function gradient estimator, as we outlined in Case 2 for $J$. This is computationally expensive for the same reasons, and also requires white-box access to the sequence model. 
+
+We still use the score function gradient estimator but only after rewriting the elicitation objective with respect to the ``inner" latent as follows. Define the utility functional $\mu:\Delta(\mathcal Y)\to\mathbb R$ by
+\begin{equation}
+\mu(\tilde p)
+:=
+\mathbb E_{Y_{n+1:n+N}\sim \tilde p^{\otimes N}}\!\big[\,U(Y_{n+1:n+N})\,\big]
+=
+\sum_{y_{n+1:n+N}\in\mathcal Y^N} U(y_{n+1:n+N}) \prod_{k=1}^N \tilde p(y_{n+k}).
+\label{eq:mu_def}
+\end{equation}
+Note $\mu$ need not be linear in $\tilde p$ for $N>1$.
+We can then rewrite the surrogate elicitation objective as
+\begin{equation}
+J_\varepsilon(z_{1:m})
+=
+\int_{\Delta(\mathcal Y)} \mu(\tilde p)\,
+\Pi_\varepsilon(d\tilde p \mid y_{1:n}; z_{1:m}).
+\label{eq:J_as_posterior_expectation}
+\end{equation} 
+We seek to optimize
+$
+J_\varepsilon(z_{1:m}).
+$
+To achieve this, we address estimation of $\nabla_{z_j}J_\varepsilon(z_{1:m})$.
+
+
+\begin{remark}
+
+The introduction of the tilting operation \eqref{eq:posterior_augmented} was a necessity derived from the practical constraints of our inference framework. The reasons are two-fold. 
+    
+First, note that we \textbf{cannot} write the elicitation objective $J$ in terms of an expectation with respect to $\Pi(\,d\tilde p|y_{1:n}, z_{1:m})$, as we have done for the surrogate $J_\epsilon$ with respect to $\Pi_\epsilon(\,d\tilde p|y_{1:n}, z_{1:m})$. This is because the posterior distribution $\Pi(\,d\tilde p|y_{1:n}, z_{1:m})$ DOES NOT EXIST, we cannot condition on a mix of discrete $y$ and continuous $z$ in the posterior.
+
+One might argued that we could have defined the latent $\tilde p$ over the continuous embedding space $\mathbb{R}^d$. However doing so makes it harder to apply the Bayesian predictive inference tools we use to sample the latent posterior.
+The Bayesian predictive inference methods detailed in Appendix \ref{app:posterior_bpi} (specifically the rollout and CLT approximations) are most easily applied to get posterior samples of $\tilde p(\{y\})$ on discrete atoms $y \in \mathcal{Y}$. They rely on the sequence model's native ability to output next-token probabilities. Extending these methods to sample continuous vectors is non-trivial and would require fundamentally different queries to the sequence model.
+
+The ``tilt'' formulation circumvents this by keeping the latent measure supported on the discrete simplex, where our inference tools are natively applicable, while still allowing the prompt to influence beliefs via the pseudo-likelihood.
+\end{remark}
+
+
+\subsection{Score function gradient}
+Define the $z_j$-score of the tilt factor by
+\begin{equation}
+s_{j,\varepsilon}(\tilde p; z_{1:m})
+:=
+\nabla_{z_j}\log W_\varepsilon(\tilde p; z_{1:m}) = \nabla_{z_j} \log q_\varepsilon(\tilde p; z_j)
+\in \mathbb R^d.
+\label{eq:score_def}
+\end{equation}
+For a scalar random variable $X$ and a random vector $V\in\mathbb R^d$, we use
+\[
+\Cov(X,V)
+:=
+\mathbb E\!\left[(X-\mathbb E X)(V-\mathbb E V)\right]\in\mathbb R^d.
+\]
+Let's assume regularity conditions that permit interchanging differentiation and integration. We distinguish between $\mu(\tilde P)$ being closed form or not. When closed form,  we have:
+\begin{equation}
+\boxed{
+\nabla_{z_j}J_\varepsilon(z_{1:m})
+=
+\Cov_{\tilde p\sim \Pi_\varepsilon(\cdot \mid y_{1:n}; z_{1:m})}
+\Big(\mu(\tilde p),\, s_{j,\varepsilon}(\tilde p; z_{1:m})\Big),
+\qquad j=1,\dots,m.
+}
+\label{eq:Jeps_RB_REINFORCE}
+\end{equation}
+Otherwise we have
+\begin{equation}
+\boxed{
+\nabla_{z_j}J_\varepsilon(z_{1:m})
+=
+\Cov_{\tilde p\sim \Pi_\varepsilon(\cdot \mid y_{1:n}; z_{1:m}), Y_{n+1:n+N} \sim \tilde p^{\otimes N}}
+\Big(U(Y_{n+1:n+N}),\, s_{j,\varepsilon}(\tilde p; z_{1:m})\Big),
+\qquad j=1,\dots,m.
+}
+\label{eq:Jeps_REINFORCE}
+\end{equation}
+
+\begin{remark}
+    Vinayak made an interesting remark on Jan 15th group meeting that the score function trick can also be used for \eqref{eq:J_eps} while currently we use it on \eqref{eq:J_as_posterior_expectation}. I had originally agreed but this is not true in the case of $J_\epsilon$. We do not have access to the score $\nabla_{z_j} \log P_\epsilon(Y_{n+1:n+N} | y_{1:n}, z_{1:m} )$, we could not even backprop to get it. 
+\end{remark}
+
+We estimate the covariance \eqref{eq:Jeps_RB_REINFORCE} using i.i.d.\ draws from the \emph{base} posterior $\Pi(\cdot\mid y_{1:n})$ and importance sampling. Since the base posterior depends only on $y_{1:n}$ and not on $z_{1:m}$, we draw samples
+\[
+\tilde p^{(l)} \stackrel{\text{i.i.d.}}{\sim} \Pi(\cdot\mid y_{1:n}), \qquad l=1,\dots,L,
+\]
+once and reuse them. For each draw we assume access to the full categorical density $\{\tilde p^{(l)}(y)\}_{y\in\mathcal Y}$.
+
+
+For each sample $\tilde p^{(l)}$, we need
+\[
+\mu^{(l)} := \mu(\tilde p^{(l)}) = \mathbb E_{Y_{n+1:n+N}\sim (\tilde p^{(l)})^{\otimes N}}\!\big[U(Y_{n+1:n+N})\big].
+\]
+In general this expectation is not tractable by enumeration over $\mathcal Y^N$.
+When $U$ has additional structure (e.g.\ additivity, dependence only on counts, etc.), $\mu^{(l)}$ may be computable in closed form. Otherwise, use Monte Carlo. For each sample, the score is available in closed form as a ratio of dot products:
+\[
+s_{j,\varepsilon}^{(l)}:=s_{j,\epsilon}(\tilde p; z_{1:m})
+=\frac{\sum_{y\in\mathcal Y} \nabla_{z}\kappa_\varepsilon(z_j,\phi(y))\,\tilde p^{(l)}(y)}
+{\sum_{y\in\mathcal Y} \kappa_\varepsilon(z_j,\phi(y))\,\tilde p^{(l)}(y)} \in \mathbb R^d.
+\]
+
+
+Given the current $z_{1:m}$, define the \textbf{importance weights}
+\[
+w_l
+:=
+W_\varepsilon(\tilde p^{(l)};z_{1:m})
+=
+\prod_{j=1}^m q_\varepsilon(\tilde p^{(l)};z_j),
+\qquad
+\tilde w_l
+:=
+\frac{w_l}{\sum_{r=1}^L w_r}.
+\]
+We estimate $\nabla_{z_j}J_\varepsilon(z_{1:m})$ by the self-normalized sample covariance:
+\begin{equation}
+\widehat{\nabla_{z_j}J_\varepsilon}(z_{1:m})
+:=\sum_{l=1}^L \tilde w_l\,
+\Big(\widehat{\mu}^{(l)}-\bar\mu_{w}\Big)\,
+\Big(s_{j,\varepsilon}^{(l)}-\bar s_{j,w}\Big),
+\end{equation}
+where $\bar\mu_{w} = \sum_{l=1}^L \tilde w_l \widehat{\mu}^{(l)}$
+and $\bar s_{j,w} = \sum_{l=1}^L \tilde w_l s_{j,\varepsilon}^{(l)}$.
+
+
+\subsection{Summary of gradients}
+\begin{itemize}
+    \item \textbf{$J$ Exact (\eqref{eq:J_exact_gradient}:} Optimization of $J$ by exact enumeration over $\mathcal{Y}^N$.
+    \[
+    \nabla_{z_{j}} J(z_{1:m}) = \sum_{y_{n+1:n+N} \in \mathcal{Y}^N} U(y_{n+1:n+N}) \nabla_{z_j} \pi_\theta(y_{n+1:n+N} | y_{1:n}, z_{1:m})
+    \]    
+
+
+    \item \textbf{$J$ REINFORCE (\eqref{eq:J_REINFORCE}:} Optimization of $J$ via the score function gradient: 
+    \[
+    \nabla_{z_j} J(z_{1:m}, N) = \text{Cov}_{Y_{n+1:n+N} \sim \pi_\theta(\cdot | y_{1:n}, z_{1:m})}\left( U(Y_{n+1:n+N}), \nabla_{z_j} \log \pi_\theta(Y_{n+1:n+N} | y_{1:n}, z_{1:m}) \right).
+    \]
+    
+
+    \item \textbf{$J_\epsilon$ RB-REINFORCE (\eqref{eq:Jeps_RB_REINFORCE}):} Optimization of the surrogate $J_\epsilon$ via the covariance of the \textit{latent} posterior $\Pi_\epsilon$ (Rao-Blackwellized): 
+    \[
+    \nabla_{z_j}J_\varepsilon(z_{1:m})
+    =
+    \Cov_{\tilde p\sim \Pi_\varepsilon(\cdot \mid y_{1:n}; z_{1:m})}
+    \Big(\mu(\tilde p),\, s_{j,\varepsilon}(\tilde p; z_{1:m})\Big),
+    \qquad j=1,\dots,m.
+    \]
+
+    \item \textbf{$J_\epsilon$ REINFORCE (\eqref{eq:Jeps_REINFORCE}):} Optimization of the surrogate $J_\epsilon$ via the covariance of the \textit{latent} posterior $\Pi_\epsilon$ (Rao-Blackwellized): 
+    \[
+    \nabla_{z_j}J_\varepsilon(z_{1:m})
+    =
+    \Cov_{\tilde p\sim \Pi_\varepsilon(\cdot \mid y_{1:n}; z_{1:m}), Y_{n+1:n+N} \sim \tilde p^{\otimes N}}
+    \Big(U(Y_{n+1:n+N}),\, s_{j,\varepsilon}(\tilde p; z_{1:m})\Big),
+    \qquad j=1,\dots,m.
+    \]
+\end{itemize}
+We already discussed the number of forward passes through $\pi_\theta$ required for each method. The true computational advantages of each depends largely on the distribution of the utility. In the next section, we use Beta-Bernoulli Transformer as a testbed for teasing out the advantages for different utilities. 
+
+\textcolor{red}{Vinayak had sketched in Discord about advantages of doing score function trick on $J$ (or $J_\epsilon$) as posterior expectation versus as posterior predictive expectation. @Vinayak, can you please formalise this and write it up here? It'd help reduce mental burden for me if you can use as much of my notation as possible. I'm still not sure how this story interacts with Rao-Blackwellisation and low-probability event.}  
+% =========================
+% Beta--Bernoulli section (keep \Pi_\varepsilon over \tilde p; use \tilde p(1) inside formulas)
+% =========================
+
+
+\subsection{Why should optimizing the surrogate elicitation objective work?}
+There are many possible factors that optimizing the surrogate $J_\epsilon$ gives prompt that perform well under the original $J$. One way for this to happen is if there exists kernel $\kappa$ and $\epsilon$ such that for all $y_{1:n}$ and $z_{1:m}$
+\begin{equation}
+    \pi_\theta(\cdot \mid y_{1:n}, z_{1:m}) \approx P_\varepsilon(\cdot \mid y_{1:n}; z_{1:m})
+    \label{ass:tilt}
+\end{equation}
+where $\pi_\theta(\cdot \mid y_{1:n}, z_{1:m})$ is shorthand for $\pi_\theta(\cdot \mid \mathrm{embed}(y_{1:n}), z_{1:m})$
+Under \ref{ass:tilt} we can connect the prompt tuning back to the sequence model. It is indeed ``load-bearing,'' but my intuition is that it stands or falls with Assumption \ref{ass:icl_exch}. If the Transformer is genuinely an \emph{In-Context Bayesian} predictor (i.e., it maintains a coherent posterior belief $\Pi(\cdot|y_{1:n})$), it is plausible that its mechanism for integrating new information (even soft prompts) follows a similar Bayesian update rule. In this view, Assumption \ref{ass:tilt} is not a radical new constraint, but a structural consequence of the model being consistent with its own Bayesian nature.
+
+
+
+\section{Beta--Bernoulli Transformer}
+
+We provide a walkthrough of the framework above for a sequence model meta-trained on Beta--Bernoulli. 
+Let $\mathcal Y=\{0,1\}$. A Bernoulli latent can be parameterized by the coordinate
+\[
+p := \tilde p(1)\in[0,1], \qquad \tilde p(0)=1-\tilde p(1),
+\]
+but we keep $\tilde p\in\Delta(\mathcal Y)$ as the latent object and view $p$ as its evaluation at token $1$.
+
+Take a pretraining (meta) distribution obtained by first drawing $p\sim \mathrm{Beta}(1,1)$ and then sampling
+\[
+Y_t \mid \tilde p \stackrel{\text{i.i.d.}}{\sim} \tilde p
+\qquad
+(\text{equivalently } Y_t\mid p \stackrel{\text{i.i.d.}}{\sim}\mathrm{Bernoulli}(p)).
+\]
+The corresponding posterior predictive is 
+\[
+\pi_\theta(y_t=1\mid y_{1:t-1})
+=\mathbb E[\tilde p(1)\mid y_{1:t-1}]
+=\frac{1+S_1(t-1)}{2+t-1},\qquad
+S_1(t-1)=\sum_{i=1}^{t-1}y_i.
+\]
+We can meta-train a transformer $\pi_\theta$ which, in an idealised limit, would coincide with this posterior predictive. For simplicity, we equate $\pi_\theta$ with the true posterior predictive. 
+
+
+The prompt/prefix tuning problem as defined in \citet{geneweinUnderstandingPromptTuning2025} refers to aligning the transformer to a 
+\emph{target} sequence distribution $\xi_{\mathrm{Target}}(y_{1:N})$ by \emph{prepending} a learnable prefix
+$z_{1:m}\in\mathcal S^m$. Their optimisation objective (Eq.~(7)), adapted to our notation, is the following:
+\[
+\min_{z_{1:m}\in\mathcal S^m}\;
+\E_{y_{1:N}\sim \xi_{\mathrm{Target}}}\!\left[ -\log \pi_\theta(y_{1:N} | z_{1:m})\right] 
+=
+\E_{y_{1:N}\sim \xi_{\mathrm{Target}}}\!\left[\sum_{n=1}^N -\log \pi_\theta(y_n\mid y_{<n}, z_{1:m})\right].
+\]
+Crucially, there is \emph{no initial context} in their setup to which we prepend. In our notation, this corresponds to taking the initial context to be empty ($n=0$) and identifying their continuation $y_{1:N}$ with our $y_{n+1:n+N}$. We can see that the optimization objective corresponds to a ``forward" cross entropy loss where the expectation is taken with respect to the target distribution
+\[
+\underbrace{\E_{y_{1:N}\sim \xi_{\mathrm{Target}}}\!\big[-\log \pi_\theta(y_{1:N}\mid z_{1:m})\big]}_{\text{forward cross-entropy }}
+\;=\;
+H(\xi_{\mathrm{Target}})+\mathrm{KL}\!\left(\xi_{\mathrm{Target}}(\cdot)\,\|\,\pi_\theta(\cdot|z_{1:m}) \right).
+\]
+
+\begin{remark}
+\citet{geneweinUnderstandingPromptTuning2025} explicitly allow the
+prefix alphabet $\mathcal S$ to vary by method: HardPT uses $\mathcal S=\mathcal Y$, SimplexPT uses
+$\mathcal S=\Delta(\mathcal Y)\subset\mathbb R^{|\mathcal Y|}$, RealPT uses $\mathcal S=\mathbb R^{|\mathcal Y|}$,
+and SoftPT uses $\mathcal S=\mathbb R^{d_{\mathrm{embed}}}$ (``embedding-dimensionality''). 
+It is also helpful to remember what $\pi_\theta(\cdot\mid s_{1:L})$ denotes: the network
+always consumes a \emph{sequence of input vectors} and outputs a distribution over the next \emph{discrete}
+token. Similarly $\pi_\theta(\cdot\mid y_{<n}, s_{1:L})$ is short hand for $\pi_\theta(\cdot\mid \text{embed}(y_{<n}), s_{1:L})$.
+\end{remark}
+
+
+In contrast, our elicitation objective where we set the utility to $U(y_{1:N})=-\log \xi_{\mathrm{Target}}(y_{1:N})$, is the ``reverse"-cross-entropy
+\[
+J_\varepsilon(z_{1:m})
+=
+\underbrace{\E_{y_{n+1:n+N} \sim P_\varepsilon(\cdot | y_{1:n}; z_{1:m})}\!\big[-\log \xi_{\mathrm{Target}}(y_{n+1:n+N})\big]}_{\text{reverse cross-entropy }}
+\;=\;
+H(P_\varepsilon)+\mathrm{KL}\!\left(P_\varepsilon\,\|\,\xi_{\mathrm{Target}}\right).
+\]
+Viewed in this way, we can reasonably expect the objective in \citet{geneweinUnderstandingPromptTuning2025} to be \textit{mass-seeking} while our objective is \textit{mode-seeking}.
+
+
+Other difference include the fact that our design variables $z_{1:m}$ do \emph{not} enter the sequence predictor as additional conditioning tokens/vectors. They act only through the tilt factor $W_\varepsilon(\tilde p;z_{1:m})$. 
+Thus the two approaches differ in (i) \emph{which distribution the expectation is taken under}
+(target vs.\ model) and (ii) \emph{how the prompt acts} (direct conditioning of the neural predictor vs.\
+posterior tilting of the latent Bayesian model). 
+
+
+\subsection{Single-coin target}
+\paragraph{Target distribution.}
+We take the \emph{Single-Coin} target experiment in \citet{geneweinUnderstandingPromptTuning2025}.
+Fix $\tau_*\in(0,1)$ (e.g.\ $\tau_*=0.2$) and define an \emph{unconditional} target law
+$\xi_{\mathrm{Target}}$ on continuations $y_{n+1:n+N}\in\{0,1\}^N$ by
+\begin{equation}
+\xi_{\mathrm{Target}}(y_{n+1:n+N})
+:=\prod_{k=1}^N \tau_*^{y_{n+k}}(1-\tau_*)^{1-y_{n+k}}
+=\tau_*^{S_1(N)}(1-\tau_*)^{S_0(N)},
+\label{eq:xi_target_single_coin}
+\end{equation}
+where $S_1(N):=\sum_{k=1}^N y_{n+k}$ and $S_0(N):=N-S_1(N)$.
+Accordingly, we set the utility to the \textbf{reverse cross-entropy loss}
+\begin{equation}
+U(y_{n+1:n+N}) := -\log \xi_{\mathrm{Target}}(y_{n+1:n+N})
+= -S_1(N)\log\tau_* - S_0(N)\log(1-\tau_*).
+\label{eq:U_reverse_xi_target}
+\end{equation}
+
+\paragraph{Elicitation objective $J$}
+Fix a context $y_{1:n}$ and a soft prompt $z$. Let $\pi_\theta(\cdot \mid y_{1:n},z)$ denote the induced (autoregressive) continuation law on $y_{n+1:n+N}\in\{0,1\}^N$. We define the \emph{exact} objective
+\begin{equation}
+J(z)
+:= \mathbb{E}_{Y_{n+1:n+N}\sim \pi_\theta(\cdot \mid y_{1:n},z)}\!\big[\,U(Y_{n+1:n+N})\,\big].
+\label{eq:J_def_single_coin}
+\end{equation}
+Using \eqref{eq:U_reverse_xi_target} and linearity of expectation,
+\begin{align}
+J(z)
+&= -\log\tau_* \;\mathbb{E}\!\big[S_1(N)\big]
+\;-\;\log(1-\tau_*)\;\mathbb{E}\!\big[S_0(N)\big]
+\nonumber\\
+&= -\log\tau_* \;\mathbb{E}\!\big[S_1(N)\big]
+\;-\;\log(1-\tau_*)\;\Big(N-\mathbb{E}\!\big[S_1(N)\big]\Big)
+\nonumber\\
+&= -N\log(1-\tau_*) \;+\;\log\!\Big(\tfrac{1-\tau_*}{\tau_*}\Big)\,\mathbb{E}\!\big[S_1(N)\big].
+\label{eq:J_expand_single_coin}
+\end{align}
+Now define the horizon-wise marginal one-probabilities
+\begin{equation}
+p_t(z)\;:=\;\Pr_{\pi_\theta(\cdot \mid y_{1:n},z)}\!\big(Y_{n+t}=1\big),
+\qquad t=1,\dots,N,
+\label{eq:pt_def}
+\end{equation}
+and the average marginal one-rate over the horizon
+\begin{equation}
+\bar p_N(z)\;:=\;\frac{1}{N}\sum_{t=1}^N p_t(z).
+\label{eq:pbar_def}
+\end{equation}
+Since $S_1(N)=\sum_{t=1}^N Y_{n+t}$, we have
+\begin{equation}
+\mathbb{E}\!\big[S_1(N)\big] \;=\; \sum_{t=1}^N \mathbb{E}[Y_{n+t}]
+\;=\; \sum_{t=1}^N p_t(z)
+\;=\; N\,\bar p_N(z).
+\label{eq:ES1_equals_Npbar}
+\end{equation}
+Substituting \eqref{eq:ES1_equals_Npbar} into \eqref{eq:J_expand_single_coin} yields the key identity
+\begin{equation}
+J(z)
+=
+N\Bigg[
+-\log(1-\tau_*)
++\bar p_N(z)\,\log\!\Big(\tfrac{1-\tau_*}{\tau_*}\Big)
+\Bigg].
+\label{eq:J_in_terms_of_pbar}
+\end{equation}
+
+\paragraph{Surrogate elicitation objective $J_\epsilon$}
+Under the exchangeable Beta--Bernoulli meta training distribution, Monte Carlo over $\mathcal Y^N$ is not required to evaluate $\mu(\tilde p)$. The functional in \eqref{eq:mu_def} is available in closed form and depends on $\tilde p$ only through $\tilde p(1)$:
+\begin{align}
+\mu(\tilde p)
+&:=\E_{Y_{n+1:n+N}\sim \tilde p^{\otimes N}}\!\big[U(Y_{n+1:n+N})\big] \notag \\
+&= N\!\left[\tilde p(1)(-\log\tau_*) + \tilde p(0)(-\log(1-\tau_*))\right] \notag \\
+&= N\Big(-\log(1-\tau_*) + \tilde p(1)\log\!\frac{1-\tau_*}{\tau_*}\Big).
+\label{eq:mu_single_coin_closed}
+\end{align}
+We can plug this in to get $J_\epsilon$ in \eqref{eq:J_eps}.
+
+\paragraph{Base posterior and tilted posterior over $\tilde p$.}
+Under the pretraining prior $p=\tilde p(1)\sim \mathrm{Beta}(1,1)$ and observed context $y_{1:n}$,
+the base posterior $\Pi(\cdot\mid y_{1:n})$ is a measure on $\Delta(\{0,1\})$ supported on Bernoulli pmfs and satisfies
+\begin{equation}
+\tilde p(1)\mid y_{1:n}\sim \mathrm{Beta}(\alpha_n,\beta_n),
+\qquad
+\alpha_n := 1+\sum_{i=1}^n y_i,\quad
+\beta_n := 1+n-\sum_{i=1}^n y_i.
+\label{eq:base_beta_posterior}
+\end{equation}
+We do not use this ground truth in our experiment, instead we use the predictive Monte Carlo method outlined in the Appendix to obtain samples from $\tilde p(1)\mid y_{1:n}$. 
+
+Given $z_{1:m}$, the tilted posterior remains a measure on $\Delta(\{0,1\})$:
+\begin{equation}
+\Pi_\varepsilon(d\tilde p\mid y_{1:n};z_{1:m})
+\propto W_\varepsilon(\tilde p;z_{1:m})\;\Pi(d\tilde p\mid y_{1:n}),
+\label{eq:tilted_beta_posterior}
+\end{equation}
+where $W_\varepsilon(\tilde p;z_{1:m})=\prod_{j=1}^m q_\varepsilon(\tilde p;z_j)$.
+Write $\kappa_y(z):=\kappa_\varepsilon(z,\phi(y))$ for $y\in\{0,1\}$. Then
+\begin{equation}
+q_\varepsilon(\tilde p;z)
+=\sum_{y\in\{0,1\}} \kappa_\varepsilon(z,\phi(y))\,\tilde p(y)
+= \tilde p(1)\,\kappa_1(z) + \tilde p(0)\,\kappa_0(z).
+\label{eq:qeps_bernoulli}
+\end{equation}
+
+\paragraph{Explicit score $s_{j,\varepsilon}$.}
+For each prompt component $z_j$, the score in \eqref{eq:score_def} becomes
+\begin{align}
+s_{j,\varepsilon}(\tilde p;z_{1:m})
+&=\nabla_{z_j}\log q_\varepsilon(\tilde p;z_j) \notag \\
+&=\frac{\tilde p(1)\,\nabla \kappa_1(z_j) + \tilde p(0)\,\nabla \kappa_0(z_j)}
+{\tilde p(1)\,\kappa_1(z_j) + \tilde p(0)\,\kappa_0(z_j)}.
+\label{eq:score_bernoulli_generic}
+\end{align}
+Equivalently, defining the normalized weights
+\[
+\omega_1(\tilde p;z_j):=\frac{\tilde p(1)\,\kappa_1(z_j)}{q_\varepsilon(\tilde p;z_j)},\qquad
+\omega_0(\tilde p;z_j):=\frac{\tilde p(0)\,\kappa_0(z_j)}{q_\varepsilon(\tilde p;z_j)},
+\]
+we can write
+\begin{equation}
+s_{j,\varepsilon}(\tilde p;z_{1:m})
+=\omega_1(\tilde p;z_j)\,\nabla\log\kappa_1(z_j) + \omega_0(\tilde p;z_j)\,\nabla\log\kappa_0(z_j).
+\label{eq:score_bernoulli_resp}
+\end{equation}
+We take a Gaussian kernel
+$\kappa_\varepsilon(z,\phi)=c_\varepsilon\exp(-\|z-\phi\|^2/(2\varepsilon^2))$,
+then $\nabla\log\kappa_\varepsilon(z,\phi)=-(z-\phi)/\varepsilon^2$ and
+\begin{equation}
+s_{j,\varepsilon}(\tilde p;z_{1:m})
+=-\frac{1}{\varepsilon^2}\Big(\omega_1(\tilde p;z_j)(z_j-\phi(1))+\omega_0(\tilde p;z_j)(z_j-\phi(0))\Big).
+\label{eq:score_bernoulli_gaussian}
+\end{equation}
+
+
+\paragraph{Score function gradient.}
+The general identity \eqref{eq:Jeps_RB_REINFORCE} yields
+\[
+\nabla_{z_j}J_\varepsilon(z_{1:m})
+=\Cov_{\tilde p\sim \Pi_\varepsilon(\cdot\mid y_{1:n};z_{1:m})}\!\big(\mu(\tilde p),\,s_{j,\varepsilon}(\tilde p;z_{1:m})\big).
+\]
+To estimate this, ideally we would draw $L$ samples from the \emph{base} posterior \eqref{eq:base_beta_posterior} by sampling
+\[
+p^{(l)} \stackrel{\text{i.i.d.}}{\sim} \mathrm{Beta}(\alpha_n,\beta_n),\qquad
+\tilde p^{(l)}(1):=p^{(l)},\ \ \tilde p^{(l)}(0):=1-p^{(l)},\qquad l=1,\dots,L.
+\]
+To see how we would draw $\tilde p^{(l)}(1)$ in a black-box fashion using only queries to the transformer/sequence model, see Appendix \ref{app:posterior_bpi}. This is what we do in the experiments. 
+
+Given current $z_{1:m}$, compute the unnormalized and normalized weights
+\begin{equation}
+w_l := W_\varepsilon(\tilde p^{(l)};z_{1:m})
+=\prod_{r=1}^m q_\varepsilon(\tilde p^{(l)};z_r),
+\qquad
+\tilde w_l := \frac{w_l}{\sum_{r=1}^L w_r}.
+\label{eq:IS_weights_bernoulli}
+\end{equation}
+For each sample compute
+\[
+\mu^{(l)}:=\mu(\tilde p^{(l)}) \quad\text{via \eqref{eq:mu_single_coin_closed}},\qquad
+s_{j,\varepsilon}^{(l)} := s_{j,\varepsilon}(\tilde p^{(l)};z_{1:m}) \quad\text{via \eqref{eq:score_bernoulli_generic}}.
+\]
+Then a self-normalized weighted covariance estimator of the gradient is
+\begin{equation}
+\widehat{\nabla_{z_j}J_\varepsilon}(z_{1:m})
+:=\sum_{l=1}^L \tilde w_l\,
+\big(\mu^{(l)}-\bar\mu_w\big)\,
+\big(s_{j,\varepsilon}^{(l)}-\bar s_{j,w}\big),
+\label{eq:grad_IS_cov}
+\end{equation}
+where $\bar\mu_w:=\sum_{l=1}^L \tilde w_l\,\mu^{(l)}$ and
+$\bar s_{j,w}:=\sum_{l=1}^L \tilde w_l\,s_{j,\varepsilon}^{(l)}$.
+
+
+\begin{figure}
+    \centering
+    \includegraphics[width=0.5\linewidth]{exchangeable_vs_permutation_invariant.png}
+    \caption{Enter Caption}
+    \label{fig:exchangeable_vs_permutation_invariant}
+\end{figure}
+
+
+\paragraph{Results}
+I picked $N=4$ and compared the $J$ exact and $J_\epsilon$ RB-REINFORCE gradients. Along the optimization paths, I evaluate on $J$ even though this disadvantages the path resulting from optimizing $J_\epsilon$.  
+
+\begin{figure}
+    \centering
+    \includegraphics[width=0.5\linewidth]{singlecoin_N4.png}
+    \caption{The colab notebook is \href{https://colab.research.google.com/drive/1jqoiGTVj-d4AgtX7tNSAipSEnBCXb1tK?usp=sharing}{here}. I cleaned up this overleaf \textit{after} I did the colab, so the naming does not completely match. Basically, the colab does the $J$ exact and $J_\epsilon$ RB-REINFORCE gradients, but that's not how they are labeled.}
+    \label{fig:placeholder}
+\end{figure}
+
+\textcolor{red}{@Garrett, can you please finish my $N=4$ experiment by doing the other two gradient methods. And then can you try a larger $N$ and compare all 4 gradients?}
+
+\begin{remark}
+As Garrett wrote, we can approximate
+\[
+J(z) \approx \overline J(z) := -N \log(1-\tau_\star) + \log\left(\frac{1-\tau_\star}{\tau_\star}\right)\sum_{s=0}^N s{N\choose s}\pi_\theta(y^{(s)}|y_{1:n}, z) 
+\] with \(y^{(s)}\in \{0,1\}^N\) and \(\sum_{i=1}^N y^{(s)}_i = s\). 
+Then we can backprop through the transformer to obtain $\nabla_{z_j} \bar J(z_{1:m})$.
+This equation is only exact if the transformer $\pi_\theta$ is exchangeable. Note that this is NOT the same permutation invariant with respect to its input context, see Figure \ref{fig:exchangeable_vs_permutation_invariant}. I don't recommend going through $\bar J(z)$. It is safer to keep $N$ small and enumerate the expectation in $J$, rather than make this approximation. In this simple single-coin target beta-bernoulli transformer example, I keep $N$ small and do exact enumeration to calculate the expectation in $J(z)$. If $N$ is large, than we forgo enumeration and use $J$ REINFORCE. 
+
+In addition, while Garrett focused on comparing 
+\[
+\nabla_{z_j} \bar{J}(z_{1:m}) \quad \text{v.s.} \quad \nabla_{z_j} J_\epsilon(z_{1:m})
+\]
+I just went ahead and did the optimization. 
+\end{remark}
+
+
+
+\subsection{LPE target}
+\textcolor{red}{@Vinayak, @Garrett, please cook up a LPE experiment for the beta bernoulli transformer.} 
+
+\section{Miscellaneous}
+
+
+
+On the practical side, importance sampling often faces variance issues. The estimator relies on weights $w_l$ \eqref{eq:IS_weights_bernoulli}. If the optimal prompt $z^*$ shifts the posterior significantly away from the base posterior $\Pi(\cdot|y_{1:n})$, most weights will vanish while a few explode, leading to a noisy gradient.
+Solving this requires some ``engineering derring-do''
+
+Ending on a more positive note, a significant(?) but understated upside of our formulation is the covariance form of the gradient \eqref{eq:Jeps_RB_REINFORCE}. Notice that to compute this gradient, we only need to \emph{evaluate} the score $s_{j,\varepsilon}$ (which is derived from our known kernel $\kappa_\varepsilon$) and the utility $\mu(\tilde p)$.
+Crucially, we do \emph{not} need to differentiate through the utility function itself.
+This implies we can optimize utilities $U(y)$ that are non-differentiable, discrete, or black-box (e.g., ``code compiles,'' ``unit tests passed''). Standard backpropagation-based prompt tuning cannot handle these cases(?).
+
+\bibliography{references}
+\bibliographystyle{plainnat}
+
+
+\appendix
+\section{Posterior samples from in-context Bayesian sequence model}
+\label{app:posterior_bpi}
+There are two approaches to obtaining samples from the inner posterior $\tilde p(A) | y_{1:n}$ of an in-context Bayesian sequence model $\pi_\theta$. The first way is via what I call the rollout procedure which Sonia and Sandra call "Predictive Monte Carlo" and the second is using asymptotic approximation. To apply the following approximations to the bernoulli-beta example, set $A = \{1\}$.
+
+\paragraph{Predictive Monte Carlo}
+We use the sequence model to autoregressively generate $y_{n+1:\infty}$ and calculate $\pi_\theta(A | y_{1:n} \cup y_{n+1:\infty})$, this is one sample from the posterior $\tilde p(A) | y_{1:n}$, assuming the in context Bayesian assumption holds. In practice, we rollout to some large but finite horizon. 
+
+\paragraph{Predictive CLT}
+For large $n$, under quasi-martingale like conditions, we have the Gaussian approximation
+\[
+\tilde p(A) | y_{1:n} \approx \mathcal N(\pi_\theta(A|y_{1:n}), \frac1n v_n(A))
+\]
+where 
+\[
+v_n(A) := \frac1n \sum_{k=1}^n k^2 \left ( \pi_\theta(A|y_{1:k}) - \pi_\theta(A|y_{1:k-1}) \right)^2
+\]
+
+
+\end{document}
+ 
