@@ -1,0 +1,30 @@
+{
+  "context_text": "",
+  "context_token_ids": [
+    3
+  ],
+  "cov_lr": 0.05,
+  "cov_steps": 5,
+  "device": "cpu",
+  "eps": 4.0,
+  "grad_clip": 1.0,
+  "hidden_size": 768,
+  "horizon": 2,
+  "log_every": 1,
+  "lr": 0.05,
+  "max_position_embeddings": 256,
+  "model_id": "phonemetransformers/GPT2-85M-CHAR-PHON",
+  "pmc_rollout_len": 8,
+  "pmc_samples": 20,
+  "pmc_seed_offset": 10000,
+  "prepend_bos": true,
+  "prompt_len": 8,
+  "run_dir": "language_models/results/prompt_tuning_elicitation/smoke_cov_compare",
+  "run_name": "smoke_cov_compare",
+  "seed": 0,
+  "skip_covariance": false,
+  "steps": 5,
+  "tau_alpha": 0.3,
+  "top_k": 12,
+  "vocab_size": 51
+}

@@ -1,4 +1,3 @@
 - Always activate the local venv before running python.
 - Never selectively git add. Anyting that shouldn't be added should be put into gitignore. Always use git add --all after that.
-- If you are going to run something that's likely to take a long time (more than 5 mins) then run it in a way so that: a) it produces detailed logs in a log file that I can check live while the script is still running, and b) if my ssh connection dies that shouldn't lead to the termination of the process, which means you need to run it using nohup or equivalent.
 - Always try to reuse functions that have been previously written and tested if possible. If there is a choice between writing a new function from scratch vs writing the new code in a way that it can reuse a previously written and tested function then go with the latter. 

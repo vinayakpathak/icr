@@ -1,0 +1,30 @@
+{
+  "context_text": "",
+  "context_token_ids": [
+    0
+  ],
+  "cov_lr": 0.05,
+  "cov_steps": 300,
+  "device": "cuda",
+  "eps": 4.0,
+  "grad_clip": 1.0,
+  "hidden_size": 768,
+  "horizon": 2,
+  "log_every": 10,
+  "lr": 0.05,
+  "max_position_embeddings": 1024,
+  "model_id": "vesteinn/gpt2-dna",
+  "pmc_rollout_len": 500,
+  "pmc_samples": 300,
+  "pmc_seed_offset": 10000,
+  "prepend_bos": true,
+  "prompt_len": 8,
+  "run_dir": "language_models/results/prompt_tuning_elicitation/seed0_dna_compare300_s300_r500_gpu",
+  "run_name": "seed0_dna_compare300_s300_r500_gpu",
+  "seed": 0,
+  "skip_covariance": false,
+  "steps": 300,
+  "tau_alpha": 0.3,
+  "top_k": 5,
+  "vocab_size": 5
+}

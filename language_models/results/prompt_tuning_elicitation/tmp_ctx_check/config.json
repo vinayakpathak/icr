@@ -1,0 +1,33 @@
+{
+  "context_text": "ACGT",
+  "context_token_ids": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "cov_lr": 0.05,
+  "cov_steps": 1,
+  "device": "cuda",
+  "eps": 4.0,
+  "grad_clip": 1.0,
+  "hidden_size": 768,
+  "horizon": 2,
+  "log_every": 1,
+  "lr": 0.05,
+  "max_position_embeddings": 1024,
+  "model_id": "vesteinn/gpt2-dna",
+  "pmc_rollout_len": 10,
+  "pmc_samples": 2,
+  "pmc_seed_offset": 10000,
+  "prepend_bos": false,
+  "prompt_len": 8,
+  "run_dir": "language_models/results/prompt_tuning_elicitation/tmp_ctx_check",
+  "run_name": "tmp_ctx_check",
+  "seed": 0,
+  "skip_covariance": false,
+  "steps": 1,
+  "tau_alpha": 0.3,
+  "top_k": 5,
+  "vocab_size": 5
+}
