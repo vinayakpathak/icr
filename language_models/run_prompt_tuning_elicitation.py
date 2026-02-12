@@ -119,18 +119,31 @@ def parse_args() -> argparse.Namespace:
         "--pmc-estimator",
         type=str,
         default="predictive_final",
-        choices=["predictive_final", "rollout_freq"],
+        choices=["predictive_final", "rollout_freq", "clt"],
         help=(
             "How each PMC latent sample is formed: "
             "'predictive_final' follows notebook/tex (next-token predictive after rollout), "
-            "'rollout_freq' uses empirical token frequencies along the rollout."
+            "'rollout_freq' uses empirical token frequencies along the rollout, "
+            "'clt' uses the appendix predictive-CLT approximation."
         ),
     )
     parser.add_argument(
         "--pmc-freq-smoothing",
         type=float,
         default=1e-3,
-        help="Additive smoothing alpha for rollout_freq estimator (ignored for predictive_final).",
+        help="Additive smoothing alpha for rollout_freq estimator (ignored for predictive_final/clt).",
+    )
+    parser.add_argument(
+        "--clt-var-scale",
+        type=float,
+        default=1.0,
+        help="Multiplicative scale on predictive-CLT variance (used only when --pmc-estimator=clt).",
+    )
+    parser.add_argument(
+        "--clt-var-floor",
+        type=float,
+        default=1e-12,
+        help="Minimum variance floor for predictive-CLT sampling (used only when --pmc-estimator=clt).",
     )
     parser.add_argument(
         "--tau-alpha",
@@ -351,18 +364,24 @@ def sample_pmc_predictives(
     log_every: int,
     estimator: str,
     freq_smoothing: float,
+    clt_var_scale: float,
+    clt_var_floor: float,
 ) -> torch.Tensor:
     """Predictive-MC latent samples under a rollout approximation."""
     if num_samples <= 0:
         raise ValueError("--pmc-samples must be positive")
     if rollout_len < 0:
         raise ValueError("--pmc-rollout-len must be non-negative")
-    if estimator not in {"predictive_final", "rollout_freq"}:
+    if estimator not in {"predictive_final", "rollout_freq", "clt"}:
         raise ValueError(f"Unsupported --pmc-estimator: {estimator}")
     if estimator == "rollout_freq" and rollout_len == 0:
         raise ValueError("--pmc-rollout-len must be > 0 when --pmc-estimator=rollout_freq")
     if freq_smoothing < 0:
         raise ValueError("--pmc-freq-smoothing must be >= 0")
+    if clt_var_scale <= 0:
+        raise ValueError("--clt-var-scale must be positive")
+    if clt_var_floor <= 0:
+        raise ValueError("--clt-var-floor must be positive")
 
     device = context_ids.device
     generator = torch.Generator(device=device)
@@ -373,6 +392,44 @@ def sample_pmc_predictives(
         warm = model(input_ids=context_ids.view(1, -1), use_cache=False, return_dict=True)
         vocab_size = int(warm.logits.shape[-1])
         pmc = torch.empty((num_samples, vocab_size), dtype=torch.float32, device=device)
+
+        if estimator == "clt":
+            n = int(context_ids.numel())
+            if n <= 0:
+                raise ValueError("CLT estimator requires at least one context token.")
+
+            prefix_probs: List[torch.Tensor] = []
+            for k in range(1, n + 1):
+                prefix_ids = context_ids[:k].view(1, -1)
+                out = model(input_ids=prefix_ids, use_cache=False, return_dict=True)
+                prefix_probs.append(torch.softmax(out.logits[:, -1, :].float(), dim=-1).squeeze(0))
+
+            mean_probs = prefix_probs[-1].clamp_min(1e-30)
+
+            # Use p(y|y_{1:0}) := p(y|y_{1:1}) fallback (delta_1 = 0) when explicit empty-context query is unavailable.
+            deltas: List[torch.Tensor] = [torch.zeros_like(mean_probs)]
+            for k in range(1, n):
+                deltas.append(prefix_probs[k] - prefix_probs[k - 1])
+            deltas_tensor = torch.stack(deltas, dim=0)  # [n, V]
+
+            k_idx = torch.arange(1, n + 1, dtype=torch.float32, device=device).unsqueeze(1)  # [n,1]
+            v_n = ((k_idx * k_idx) * (deltas_tensor * deltas_tensor)).sum(dim=0) / float(n)
+            var = (v_n / float(n)) * float(clt_var_scale)
+            var = var.clamp_min(float(clt_var_floor))
+            std = torch.sqrt(var)
+
+            normal_noise = torch.randn((num_samples, vocab_size), generator=generator, device=device)
+            samples = mean_probs.unsqueeze(0) + normal_noise * std.unsqueeze(0)
+            samples = samples.clamp_min(1e-12)
+            pmc = samples / samples.sum(dim=1, keepdim=True).clamp_min(1e-30)
+
+            print(
+                f"[pmc-clt] n={n} mean_min={mean_probs.min().item():.3e} "
+                f"mean_max={mean_probs.max().item():.3e} var_min={var.min().item():.3e} "
+                f"var_max={var.max().item():.3e}",
+                flush=True,
+            )
+            return pmc
 
         for idx in range(num_samples):
             input_ids = context_ids.view(1, -1)
@@ -806,7 +863,8 @@ def run() -> None:
         print(
             f"[run] covariance track: steps={cov_steps} cov_lr={args.cov_lr} eps={args.eps} "
             f"pmc_samples={args.pmc_samples} rollout_len={args.pmc_rollout_len} "
-            f"estimator={args.pmc_estimator}"
+            f"estimator={args.pmc_estimator} clt_var_scale={args.clt_var_scale} "
+            f"clt_var_floor={args.clt_var_floor}"
         )
         pmc_t0 = time.time()
         pmc_probs = sample_pmc_predictives(
@@ -819,6 +877,8 @@ def run() -> None:
             log_every=max(1, args.pmc_samples // 10),
             estimator=args.pmc_estimator,
             freq_smoothing=args.pmc_freq_smoothing,
+            clt_var_scale=args.clt_var_scale,
+            clt_var_floor=args.clt_var_floor,
         )
         pmc_runtime_sec = float(time.time() - pmc_t0)
         print(f"[run] pmc sampling done in {pmc_runtime_sec:.2f}s")
@@ -993,6 +1053,8 @@ def run() -> None:
         "pmc_rollout_len": int(args.pmc_rollout_len),
         "pmc_estimator": str(args.pmc_estimator),
         "pmc_freq_smoothing": float(args.pmc_freq_smoothing),
+        "clt_var_scale": float(args.clt_var_scale),
+        "clt_var_floor": float(args.clt_var_floor),
         "tau_alpha": float(args.tau_alpha),
         "seed": int(args.seed),
         "pmc_seed_offset": int(args.pmc_seed_offset),
