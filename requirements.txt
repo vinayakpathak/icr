@@ -1,4 +1,9 @@
-torch>=2.0.0
-boto3>=1.28.0
-
+torch==2.9.1
+boto3==1.42.24
+numpy==2.3.5
+matplotlib==3.10.8
+transformers==5.1.0
+tokenizers==0.22.2
+huggingface-hub==1.4.1
+safetensors==0.7.0
 

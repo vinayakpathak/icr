@@ -1,0 +1,14 @@
+{
+  "delivery_mode": "direct_mx",
+  "from_email": "lm-monitor@example.net",
+  "to_email": "you@gmail.com",
+  "direct_mx_host": "gmail-smtp-in.l.google.com",
+  "direct_mx_port": 25,
+  "direct_mx_use_starttls": false,
+  "direct_mx_helo_hostname": "",
+  "smtp_host": "",
+  "smtp_port": 587,
+  "smtp_username": "",
+  "smtp_password": "",
+  "smtp_use_starttls": true
+}

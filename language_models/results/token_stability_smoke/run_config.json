@@ -1,0 +1,26 @@
+{
+  "config": {
+    "bigram_min_support": 500,
+    "bigram_tv_p95_threshold": 0.03,
+    "checkpoint_interval": 500,
+    "device": "cpu",
+    "max_order": 3,
+    "max_tokens": 3000,
+    "min_tokens_before_convergence": 1000,
+    "model_id": "phonemetransformers/GPT2-85M-CHAR-PHON",
+    "num_threads_per_worker": 8,
+    "out_dir": "/root/icr/language_models/results/token_stability_smoke",
+    "plot_dir": "/root/icr/plots/language_models/token_stability_smoke",
+    "save_every_tokens": 1000,
+    "start_token": "bos",
+    "trigram_min_support": 200,
+    "trigram_tv_p95_threshold": 0.05,
+    "unigram_max_delta_threshold": 0.002,
+    "window_checkpoints": 2
+  },
+  "parallel_workers": 1,
+  "seeds": [
+    0
+  ],
+  "timestamp": "2026-02-12 03:14:15"
+}
