@@ -1,0 +1,22 @@
+{
+  "context_text": "",
+  "context_token_ids": [
+    3
+  ],
+  "device": "cpu",
+  "grad_clip": 1.0,
+  "hidden_size": 768,
+  "horizon": 2,
+  "log_every": 1,
+  "lr": 0.05,
+  "model_id": "phonemetransformers/GPT2-85M-CHAR-PHON",
+  "prepend_bos": true,
+  "prompt_len": 8,
+  "run_dir": "language_models/results/prompt_tuning_elicitation/smoke_validation",
+  "run_name": "smoke_validation",
+  "seed": 0,
+  "steps": 5,
+  "tau_alpha": 0.3,
+  "top_k": 12,
+  "vocab_size": 51
+}
