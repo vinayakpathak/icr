@@ -100,7 +100,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--eps",
         type=float,
-        default=4.0,
+        default=1.0,
         help="Bandwidth for kappa_epsilon in covariance tilt gradient.",
     )
     parser.add_argument(
@@ -113,7 +113,24 @@ def parse_args() -> argparse.Namespace:
         "--pmc-rollout-len",
         type=int,
         default=500,
-        help="Autoregressive rollout length used to estimate rollout token-frequency distribution in PMC.",
+        help="Autoregressive rollout length used for predictive-MC sampling.",
+    )
+    parser.add_argument(
+        "--pmc-estimator",
+        type=str,
+        default="predictive_final",
+        choices=["predictive_final", "rollout_freq"],
+        help=(
+            "How each PMC latent sample is formed: "
+            "'predictive_final' follows notebook/tex (next-token predictive after rollout), "
+            "'rollout_freq' uses empirical token frequencies along the rollout."
+        ),
+    )
+    parser.add_argument(
+        "--pmc-freq-smoothing",
+        type=float,
+        default=1e-3,
+        help="Additive smoothing alpha for rollout_freq estimator (ignored for predictive_final).",
     )
     parser.add_argument(
         "--tau-alpha",
@@ -332,14 +349,20 @@ def sample_pmc_predictives(
     seed: int,
     max_positions: int,
     log_every: int,
+    estimator: str,
+    freq_smoothing: float,
 ) -> torch.Tensor:
-    """Predictive-MC rows estimated from empirical token frequencies along rollouts."""
+    """Predictive-MC latent samples under a rollout approximation."""
     if num_samples <= 0:
         raise ValueError("--pmc-samples must be positive")
     if rollout_len < 0:
         raise ValueError("--pmc-rollout-len must be non-negative")
-    if rollout_len == 0:
-        raise ValueError("--pmc-rollout-len must be > 0 for rollout-frequency estimation")
+    if estimator not in {"predictive_final", "rollout_freq"}:
+        raise ValueError(f"Unsupported --pmc-estimator: {estimator}")
+    if estimator == "rollout_freq" and rollout_len == 0:
+        raise ValueError("--pmc-rollout-len must be > 0 when --pmc-estimator=rollout_freq")
+    if freq_smoothing < 0:
+        raise ValueError("--pmc-freq-smoothing must be >= 0")
 
     device = context_ids.device
     generator = torch.Generator(device=device)
@@ -367,19 +390,32 @@ def sample_pmc_predictives(
                 probs = torch.softmax(outputs.logits[:, -1, :].float(), dim=-1)
                 next_token = torch.multinomial(probs, num_samples=1, generator=generator)
                 input_ids = next_token
-                token_counts.scatter_add_(
-                    0,
-                    next_token.view(-1),
-                    torch.ones(1, dtype=torch.float32, device=device),
-                )
+                if estimator == "rollout_freq":
+                    token_counts.scatter_add_(
+                        0,
+                        next_token.view(-1),
+                        torch.ones(1, dtype=torch.float32, device=device),
+                    )
 
                 if max_positions > 1:
                     past_key_values = crop_past_key_values(past_key_values, keep_len=max_positions - 1)
-            pmc[idx, :] = token_counts / float(rollout_len)
+
+            if estimator == "predictive_final":
+                final_outputs = model(
+                    input_ids=input_ids,
+                    past_key_values=past_key_values,
+                    use_cache=False,
+                    return_dict=True,
+                )
+                pmc[idx, :] = torch.softmax(final_outputs.logits[:, -1, :].float(), dim=-1).squeeze(0)
+            else:
+                smoothed = token_counts + float(freq_smoothing)
+                pmc[idx, :] = smoothed / smoothed.sum()
 
             if idx == 0 or (idx + 1) % log_every == 0 or idx + 1 == num_samples:
                 print(
-                    f"[pmc] sample={idx + 1:4d}/{num_samples} rollout_len={rollout_len}",
+                    f"[pmc] sample={idx + 1:4d}/{num_samples} "
+                    f"rollout_len={rollout_len} estimator={estimator}",
                     flush=True,
                 )
 
@@ -400,14 +436,17 @@ def covariance_elicitation_grad(
 
     eps2 = float(eps * eps)
 
-    # kappa_j(y) = exp(-||z_j - phi(y)||^2 / (2 eps^2))
+    pmc_probs = pmc_probs / pmc_probs.sum(dim=1, keepdim=True).clamp_min(1e-30)
+    log_p = torch.log(pmc_probs.clamp_min(1e-30))  # [L, V]
+
+    # log kappa_j(y) = -||z_j - phi(y)||^2 / (2 eps^2), up to a z-independent constant
     diff = soft_prompt.unsqueeze(1) - token_embeds.unsqueeze(0)  # [M, V, D]
     sq_norm = (diff * diff).sum(dim=-1)  # [M, V]
-    kappa = torch.exp(-0.5 * sq_norm / eps2).clamp_min(1e-30)  # [M, V]
+    log_kappa = -0.5 * sq_norm / eps2  # [M, V]
 
     # q_lj = sum_y p_l(y) * kappa_j(y)
-    q = (pmc_probs @ kappa.transpose(0, 1)).clamp_min(1e-30)  # [L, M]
-    logw = torch.log(q).sum(dim=1)  # [L]
+    log_q = torch.logsumexp(log_p.unsqueeze(1) + log_kappa.unsqueeze(0), dim=-1)  # [L, M]
+    logw = log_q.sum(dim=1)  # [L]
     w = torch.softmax(logw, dim=0)  # [L]
 
     log_tau = torch.log(tau.clamp_min(1e-30))
@@ -415,19 +454,21 @@ def covariance_elicitation_grad(
     mu_bar = (w * mu).sum()
 
     # responsibilities r_ljy = p_l(y) kappa_j(y) / q_lj
-    responsibilities = (pmc_probs.unsqueeze(1) * kappa.unsqueeze(0)) / q.unsqueeze(-1)  # [L, M, V]
-    expected_phi = torch.einsum("lmv,vd->lmd", responsibilities, token_embeds)  # [L, M, D]
-
-    score = -(soft_prompt.unsqueeze(0) - expected_phi) / eps2  # [L, M, D]
+    responsibilities = torch.softmax(log_p.unsqueeze(1) + log_kappa.unsqueeze(0), dim=-1)  # [L, M, V]
+    grad_log_kappa = -(soft_prompt.unsqueeze(1) - token_embeds.unsqueeze(0)) / eps2  # [M, V, D]
+    score = torch.einsum("lmv,mvd->lmd", responsibilities, grad_log_kappa)  # [L, M, D]
     score_bar = (w[:, None, None] * score).sum(dim=0, keepdim=True)  # [1, M, D]
 
     grad = (w[:, None, None] * (mu[:, None, None] - mu_bar) * (score - score_bar)).sum(dim=0)
 
     ess = 1.0 / (w.square().sum() + 1e-12)
+    w_entropy = -(w * torch.log(w.clamp_min(1e-30))).sum()
     diag = {
         "ess": float(ess.item()),
         "ess_frac": float((ess / float(pmc_probs.shape[0])).item()),
         "max_w": float(w.max().item()),
+        "w_std": float(w.std(unbiased=False).item()),
+        "w_entropy": float(w_entropy.item()),
         "mu_mean": float(mu.mean().item()),
         "mu_std": float(mu.std(unbiased=False).item()),
     }
@@ -556,6 +597,8 @@ def optimize_covariance_track(
             "ess": float(diag["ess"]),
             "ess_frac": float(diag["ess_frac"]),
             "max_w": float(diag["max_w"]),
+            "w_std": float(diag["w_std"]),
+            "w_entropy": float(diag["w_entropy"]),
             "mu_mean": float(diag["mu_mean"]),
             "mu_std": float(diag["mu_std"]),
             "elapsed_sec": float(time.time() - t0),
@@ -567,7 +610,8 @@ def optimize_covariance_track(
                 f"[cov ] step={step + 1:4d}/{steps} "
                 f"J={row['J']:.6f} ce1={row['ce_step1']:.6f} ce2={row['ce_step2']:.6f} "
                 f"grad_norm={row['grad_norm']:.6f} ESS={row['ess']:.1f} "
-                f"max_w={row['max_w']:.4f} elapsed={row['elapsed_sec']:.1f}s",
+                f"max_w={row['max_w']:.4f} w_std={row['w_std']:.2e} "
+                f"elapsed={row['elapsed_sec']:.1f}s",
                 flush=True,
             )
 
@@ -588,6 +632,8 @@ def optimize_covariance_track(
             "ess": None,
             "ess_frac": None,
             "max_w": None,
+            "w_std": None,
+            "w_entropy": None,
             "mu_mean": None,
             "mu_std": None,
             "elapsed_sec": float(time.time() - t0),
@@ -759,7 +805,8 @@ def run() -> None:
     if not args.skip_covariance:
         print(
             f"[run] covariance track: steps={cov_steps} cov_lr={args.cov_lr} eps={args.eps} "
-            f"pmc_samples={args.pmc_samples} rollout_len={args.pmc_rollout_len}"
+            f"pmc_samples={args.pmc_samples} rollout_len={args.pmc_rollout_len} "
+            f"estimator={args.pmc_estimator}"
         )
         pmc_t0 = time.time()
         pmc_probs = sample_pmc_predictives(
@@ -770,6 +817,8 @@ def run() -> None:
             seed=args.seed + args.pmc_seed_offset,
             max_positions=max_positions,
             log_every=max(1, args.pmc_samples // 10),
+            estimator=args.pmc_estimator,
+            freq_smoothing=args.pmc_freq_smoothing,
         )
         pmc_runtime_sec = float(time.time() - pmc_t0)
         print(f"[run] pmc sampling done in {pmc_runtime_sec:.2f}s")
@@ -942,6 +991,8 @@ def run() -> None:
         "eps": float(args.eps),
         "pmc_samples": int(args.pmc_samples),
         "pmc_rollout_len": int(args.pmc_rollout_len),
+        "pmc_estimator": str(args.pmc_estimator),
+        "pmc_freq_smoothing": float(args.pmc_freq_smoothing),
         "tau_alpha": float(args.tau_alpha),
         "seed": int(args.seed),
         "pmc_seed_offset": int(args.pmc_seed_offset),

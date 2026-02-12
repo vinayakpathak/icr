@@ -57,9 +57,11 @@ r2_config.json
 gradient_results.json
 experiment_metadata.json
 analysis_results.json
+.tmp_*.py
 language_models/results/token_stability_dense10/
 language_models/results/token_stability_dense_smoke/
 language_models/results/token_stability_prob_smoke/
+language_models/results/prompt_tuning_elicitation/smoke_*/
 plots/language_models/token_stability_dense10/
 plots/language_models/token_stability_dense_smoke/
 plots/language_models/token_stability_prob_smoke/
