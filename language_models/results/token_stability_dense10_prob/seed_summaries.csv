@@ -1,0 +1,6 @@
+seed,final_tokens,converged,stop_reason,convergence_checkpoint,runtime_sec,vocab_size,max_position_embeddings
+0,280000,True,converged,280000,21394.571623563766,51,256
+1,280000,True,converged,280000,21404.300640821457,51,256
+2,280000,True,converged,280000,21396.671027183533,51,256
+3,280000,True,converged,280000,21386.39822936058,51,256
+4,280000,True,converged,280000,21403.546371936798,51,256

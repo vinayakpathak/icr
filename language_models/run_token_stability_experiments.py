@@ -46,6 +46,7 @@ class ExperimentConfig:
     bigram_min_support: int
     trigram_min_support: int
     save_every_tokens: int
+    trajectory_interval: int
     out_dir: str
     plot_dir: str
     num_threads_per_worker: int
@@ -138,6 +139,12 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=100_000,
         help="Write periodic state snapshots every N tokens.",
+    )
+    parser.add_argument(
+        "--trajectory-interval",
+        type=int,
+        default=10,
+        help="Record unigram trajectory points every N generated tokens for token_trajectories plots.",
     )
     parser.add_argument(
         "--out-dir",
@@ -322,6 +329,21 @@ def plot_seed_outputs(seed_dir: Path, plot_seed_dir: Path, seed: int, vocab_size
     fig2.savefig(plot_seed_dir / "token_trajectories.png", dpi=150, bbox_inches="tight")
     plt.close(fig2)
 
+    if "next_prob_tokens" in data.files and "next_token_probs" in data.files:
+        prob_tokens = data["next_prob_tokens"]
+        prob_traj = data["next_token_probs"].astype(np.float32, copy=False)
+
+        fig3, ax3 = plt.subplots(figsize=(12, 7))
+        for tok_idx in range(min(vocab_size, prob_traj.shape[1])):
+            ax3.plot(prob_tokens, prob_traj[:, tok_idx], alpha=0.5, linewidth=0.8)
+        ax3.set_xlabel("Total tokens in chain")
+        ax3.set_ylabel("P(next token)")
+        ax3.set_title(f"Seed {seed}: Next-token probability trajectories (all {vocab_size} tokens)")
+        ax3.grid(alpha=0.25)
+        fig3.tight_layout()
+        fig3.savefig(plot_seed_dir / "next_token_prob_trajectories.png", dpi=150, bbox_inches="tight")
+        plt.close(fig3)
+
 
 def run_single_seed(seed: int, cfg: ExperimentConfig) -> Dict[str, Any]:
     t0 = time.time()
@@ -377,11 +399,27 @@ def run_single_seed(seed: int, cfg: ExperimentConfig) -> Dict[str, Any]:
     stop_reason = "max_tokens_reached"
     convergence_checkpoint: Optional[int] = None
 
-    metric_tokens: List[int] = []
-    metric_unigram: List[float] = []
-    metric_bigram: List[float] = []
-    metric_trigram: List[float] = []
-    unigram_trajectories: List[np.ndarray] = []
+    # Pre-allocate dense trajectory buffers to avoid Python-object overhead when interval is small.
+    max_traj_points = (cfg.max_tokens // cfg.trajectory_interval) + 2
+    traj_tokens = np.empty(max_traj_points, dtype=np.int64)
+    traj_unigram = np.empty((max_traj_points, vocab_size), dtype=np.float32)
+    traj_size = 0
+    next_prob_tokens = np.empty(max_traj_points, dtype=np.int64)
+    # float16 keeps memory bounded for long runs while preserving trajectory shape.
+    next_token_probs = np.empty((max_traj_points, vocab_size), dtype=np.float16)
+    next_prob_size = 0
+
+    def append_trajectory_point(chain_tokens: int) -> None:
+        nonlocal traj_size
+        traj_tokens[traj_size] = chain_tokens
+        traj_unigram[traj_size, :] = counts1.astype(np.float64) / float(chain_tokens)
+        traj_size += 1
+
+    def append_next_prob_point(chain_tokens: int, probs_vec: np.ndarray) -> None:
+        nonlocal next_prob_size
+        next_prob_tokens[next_prob_size] = chain_tokens
+        next_token_probs[next_prob_size, :] = probs_vec.astype(np.float16, copy=False)
+        next_prob_size += 1
 
     next_snapshot_token = cfg.save_every_tokens
 
@@ -391,6 +429,8 @@ def run_single_seed(seed: int, cfg: ExperimentConfig) -> Dict[str, Any]:
     input_ids = torch.tensor([[start_token_id]], dtype=torch.long, device=device)
     past_key_values = None
 
+    append_trajectory_point(chain_tokens=1)
+
     with torch.inference_mode(), ckpt_file.open("a", encoding="utf-8") as ckpt_f:
         for total_tokens in range(1, cfg.max_tokens):
             outputs = model(input_ids=input_ids, past_key_values=past_key_values, use_cache=True)
@@ -398,6 +438,13 @@ def run_single_seed(seed: int, cfg: ExperimentConfig) -> Dict[str, Any]:
 
             logits = outputs.logits[:, -1, :]
             probs = torch.softmax(logits.float(), dim=-1)
+
+            if total_tokens == 1 or (total_tokens % cfg.trajectory_interval == 0):
+                append_next_prob_point(
+                    chain_tokens=total_tokens,
+                    probs_vec=probs[0].detach().cpu().numpy(),
+                )
+
             next_token = torch.multinomial(probs, num_samples=1, generator=generator)
             token_id = int(next_token.item())
 
@@ -427,6 +474,9 @@ def run_single_seed(seed: int, cfg: ExperimentConfig) -> Dict[str, Any]:
                     counts3=counts3 if counts3 is not None else np.array([], dtype=np.int64),
                 )
                 next_snapshot_token += cfg.save_every_tokens
+
+            if chain_tokens % cfg.trajectory_interval == 0:
+                append_trajectory_point(chain_tokens=chain_tokens)
 
             if chain_tokens % cfg.checkpoint_interval != 0 and chain_tokens != cfg.max_tokens:
                 continue
@@ -510,12 +560,6 @@ def run_single_seed(seed: int, cfg: ExperimentConfig) -> Dict[str, Any]:
             ckpt_f.write(json.dumps(row, sort_keys=True) + "\n")
             ckpt_f.flush()
 
-            metric_tokens.append(chain_tokens)
-            metric_unigram.append(unigram_delta)
-            metric_bigram.append(bigram_tv_p95)
-            metric_trigram.append(trigram_tv_p95)
-            unigram_trajectories.append(unigram.copy())
-
             print(
                 f"[seed={seed}] tokens={chain_tokens} "
                 f"uni_max_delta={row['unigram_max_delta']} "
@@ -531,10 +575,24 @@ def run_single_seed(seed: int, cfg: ExperimentConfig) -> Dict[str, Any]:
     final_tokens = int(counts1.sum())
     final_unigram = counts1.astype(np.float64) / float(final_tokens)
 
+    if traj_tokens[traj_size - 1] != final_tokens:
+        append_trajectory_point(chain_tokens=final_tokens)
+
+    if next_prob_size == 0 or next_prob_tokens[next_prob_size - 1] != final_tokens:
+        with torch.inference_mode():
+            final_outputs = model(input_ids=input_ids, past_key_values=past_key_values, use_cache=True)
+            final_probs = torch.softmax(final_outputs.logits[:, -1, :].float(), dim=-1)
+        append_next_prob_point(
+            chain_tokens=final_tokens,
+            probs_vec=final_probs[0].detach().cpu().numpy(),
+        )
+
     np.savez_compressed(
         seed_dir / "token_trajectories.npz",
-        tokens=np.array(metric_tokens, dtype=np.int64),
-        unigram_freqs=np.array(unigram_trajectories, dtype=np.float64),
+        tokens=traj_tokens[:traj_size],
+        unigram_freqs=traj_unigram[:traj_size],
+        next_prob_tokens=next_prob_tokens[:next_prob_size],
+        next_token_probs=next_token_probs[:next_prob_size],
     )
 
     summary = {
@@ -651,6 +709,8 @@ def main() -> None:
     seeds = parse_seed_list(args.seeds, args.num_seeds)
     if args.parallel_workers < 1:
         raise ValueError("--parallel-workers must be >= 1")
+    if args.trajectory_interval < 1:
+        raise ValueError("--trajectory-interval must be >= 1")
     if args.parallel_workers > len(seeds):
         print(
             f"[info] reducing parallel workers from {args.parallel_workers} to {len(seeds)} to match number of seeds",
@@ -676,6 +736,7 @@ def main() -> None:
         bigram_min_support=args.bigram_min_support,
         trigram_min_support=args.trigram_min_support,
         save_every_tokens=args.save_every_tokens,
+        trajectory_interval=args.trajectory_interval,
         out_dir=args.out_dir,
         plot_dir=args.plot_dir,
         num_threads_per_worker=args.num_threads_per_worker,
