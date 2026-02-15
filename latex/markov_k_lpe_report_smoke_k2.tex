@@ -1,0 +1,35 @@
+
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{float}
+\title{Order-k Markov Transformer LPE Experiments}
+\author{Automated run via lpe/markov\_k\_transformer.py}
+\date{\today}
+\begin{document}
+\maketitle
+
+\section*{Summary}
+This report summarizes order-k experiments for $k\in\{1,\dots,7\}$ with independent Beta(1,1) priors per transition state.
+Training used sequence length equal to rollout length: $100\cdot 2^k$.
+
+\section*{Core Metrics}
+\begin{table}[H]
+\centering
+\begin{tabular}{rrrrrr}
+\toprule
+$k$ & Model NLL & Bayes NLL & Gap (\%) & Posterior MAE & LPE Median RelErr (\%) \\
+\midrule
+2 & 0.732413 & 0.546434 & 34.04 & 0.1101 & 81.73 \\
+\bottomrule
+\end{tabular}
+\caption{Primary metrics by order $k$.}
+\end{table}
+
+\section*{Figures}
+\begin{figure}[ht]\centering\includegraphics[width=0.72\linewidth]{../artifacts/markov_k_smoke_k2/k2/figures/step1_model_vs_bayes.png}\caption{k=2: Step 1: next-bit prediction vs Bayes}\end{figure}
+\begin{figure}[ht]\centering\includegraphics[width=0.72\linewidth]{../artifacts/markov_k_smoke_k2/k2/figures/step2_posterior_mean_scatter.png}\caption{k=2: Step 2: posterior mean comparison}\end{figure}
+\begin{figure}[ht]\centering\includegraphics[width=0.72\linewidth]{../artifacts/markov_k_smoke_k2/k2/figures/step3_lpe_rel_error_hist.png}\caption{k=2: Step 3: LPE relative-error histogram}\end{figure}
+
+\end{document}

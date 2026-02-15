@@ -1,0 +1,2 @@
+k,model_config,rollout_length,train_seq_len,max_seq_len,batch_size,step1_eval_model_nll,step1_eval_bayes_nll,step1_gap_pct,step2_posterior_mae,step3_lpe_rel_error_median_pct,checkpoint_path
+2,L2_D64_H4_M256,400,400,432,1,0.7324128497513315,0.5464336367384879,34.0350960315881,0.11005308779218378,81.7340247304398,checkpoints/markov_k_smoke_k2/k2/best.pt

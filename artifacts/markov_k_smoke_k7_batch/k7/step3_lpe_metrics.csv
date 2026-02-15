@@ -1,0 +1,2 @@
+k,context_id,context_len,target_len,true_prob,true_log10_prob,posterior_estimate,posterior_std_error,relative_error_pct
+7,0,20,100,2.3965697326009126e-33,-32.620409929892226,7.610176060844486e-33,3.4600194949185866e-33,217.54452863699615

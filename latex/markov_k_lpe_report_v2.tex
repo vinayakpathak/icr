@@ -1,0 +1,59 @@
+
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{float}
+\title{Order-k Markov Transformer LPE Experiments}
+\author{Automated run via lpe/markov\_k\_transformer.py}
+\date{\today}
+\begin{document}
+\maketitle
+
+\section*{Summary}
+This report summarizes order-k experiments for $k\in\{1,\dots,7\}$ with independent Beta(1,1) priors per transition state.
+Training used sequence length equal to rollout length: $100\cdot 2^k$.
+
+\section*{Core Metrics}
+\begin{table}[H]
+\centering
+\begin{tabular}{rrrrrr}
+\toprule
+$k$ & Model NLL & Bayes NLL & Gap (\%) & Posterior MAE & LPE Median RelErr (\%) \\
+\midrule
+1 & 0.593086 & 0.530185 & 11.86 & 0.2011 & 99.71 \\
+2 & 0.652844 & 0.540651 & 20.75 & 0.2308 & 59688127439485361302011904.00 \\
+3 & 0.631652 & 0.492707 & 28.20 & 0.1713 & 12082995.17 \\
+4 & 0.614127 & 0.445917 & 37.72 & 0.2331 & 1618087.60 \\
+5 & 0.690311 & 0.512228 & 34.77 & 0.0618 & 53197.70 \\
+6 & 0.683737 & 0.485833 & 40.74 & 0.0383 & 5818550.92 \\
+7 & 0.692454 & 0.535458 & 29.32 & 0.0218 & 910.38 \\
+\bottomrule
+\end{tabular}
+\caption{Primary metrics by order $k$.}
+\end{table}
+
+\section*{Figures}
+\begin{figure}[ht]\centering\includegraphics[width=0.72\linewidth]{../artifacts/markov_k_full_v2/k1/figures/step1_model_vs_bayes.png}\caption{k=1: Step 1: next-bit prediction vs Bayes}\end{figure}
+\begin{figure}[ht]\centering\includegraphics[width=0.72\linewidth]{../artifacts/markov_k_full_v2/k1/figures/step2_posterior_mean_scatter.png}\caption{k=1: Step 2: posterior mean comparison}\end{figure}
+\begin{figure}[ht]\centering\includegraphics[width=0.72\linewidth]{../artifacts/markov_k_full_v2/k1/figures/step3_lpe_rel_error_hist.png}\caption{k=1: Step 3: LPE relative-error histogram}\end{figure}
+\begin{figure}[ht]\centering\includegraphics[width=0.72\linewidth]{../artifacts/markov_k_full_v2/k2/figures/step1_model_vs_bayes.png}\caption{k=2: Step 1: next-bit prediction vs Bayes}\end{figure}
+\begin{figure}[ht]\centering\includegraphics[width=0.72\linewidth]{../artifacts/markov_k_full_v2/k2/figures/step2_posterior_mean_scatter.png}\caption{k=2: Step 2: posterior mean comparison}\end{figure}
+\begin{figure}[ht]\centering\includegraphics[width=0.72\linewidth]{../artifacts/markov_k_full_v2/k2/figures/step3_lpe_rel_error_hist.png}\caption{k=2: Step 3: LPE relative-error histogram}\end{figure}
+\begin{figure}[ht]\centering\includegraphics[width=0.72\linewidth]{../artifacts/markov_k_full_v2/k3/figures/step1_model_vs_bayes.png}\caption{k=3: Step 1: next-bit prediction vs Bayes}\end{figure}
+\begin{figure}[ht]\centering\includegraphics[width=0.72\linewidth]{../artifacts/markov_k_full_v2/k3/figures/step2_posterior_mean_scatter.png}\caption{k=3: Step 2: posterior mean comparison}\end{figure}
+\begin{figure}[ht]\centering\includegraphics[width=0.72\linewidth]{../artifacts/markov_k_full_v2/k3/figures/step3_lpe_rel_error_hist.png}\caption{k=3: Step 3: LPE relative-error histogram}\end{figure}
+\begin{figure}[ht]\centering\includegraphics[width=0.72\linewidth]{../artifacts/markov_k_full_v2/k4/figures/step1_model_vs_bayes.png}\caption{k=4: Step 1: next-bit prediction vs Bayes}\end{figure}
+\begin{figure}[ht]\centering\includegraphics[width=0.72\linewidth]{../artifacts/markov_k_full_v2/k4/figures/step2_posterior_mean_scatter.png}\caption{k=4: Step 2: posterior mean comparison}\end{figure}
+\begin{figure}[ht]\centering\includegraphics[width=0.72\linewidth]{../artifacts/markov_k_full_v2/k4/figures/step3_lpe_rel_error_hist.png}\caption{k=4: Step 3: LPE relative-error histogram}\end{figure}
+\begin{figure}[ht]\centering\includegraphics[width=0.72\linewidth]{../artifacts/markov_k_full_v2/k5/figures/step1_model_vs_bayes.png}\caption{k=5: Step 1: next-bit prediction vs Bayes}\end{figure}
+\begin{figure}[ht]\centering\includegraphics[width=0.72\linewidth]{../artifacts/markov_k_full_v2/k5/figures/step2_posterior_mean_scatter.png}\caption{k=5: Step 2: posterior mean comparison}\end{figure}
+\begin{figure}[ht]\centering\includegraphics[width=0.72\linewidth]{../artifacts/markov_k_full_v2/k5/figures/step3_lpe_rel_error_hist.png}\caption{k=5: Step 3: LPE relative-error histogram}\end{figure}
+\begin{figure}[ht]\centering\includegraphics[width=0.72\linewidth]{../artifacts/markov_k_full_v2/k6/figures/step1_model_vs_bayes.png}\caption{k=6: Step 1: next-bit prediction vs Bayes}\end{figure}
+\begin{figure}[ht]\centering\includegraphics[width=0.72\linewidth]{../artifacts/markov_k_full_v2/k6/figures/step2_posterior_mean_scatter.png}\caption{k=6: Step 2: posterior mean comparison}\end{figure}
+\begin{figure}[ht]\centering\includegraphics[width=0.72\linewidth]{../artifacts/markov_k_full_v2/k6/figures/step3_lpe_rel_error_hist.png}\caption{k=6: Step 3: LPE relative-error histogram}\end{figure}
+\begin{figure}[ht]\centering\includegraphics[width=0.72\linewidth]{../artifacts/markov_k_full_v2/k7/figures/step1_model_vs_bayes.png}\caption{k=7: Step 1: next-bit prediction vs Bayes}\end{figure}
+\begin{figure}[ht]\centering\includegraphics[width=0.72\linewidth]{../artifacts/markov_k_full_v2/k7/figures/step2_posterior_mean_scatter.png}\caption{k=7: Step 2: posterior mean comparison}\end{figure}
+\begin{figure}[ht]\centering\includegraphics[width=0.72\linewidth]{../artifacts/markov_k_full_v2/k7/figures/step3_lpe_rel_error_hist.png}\caption{k=7: Step 3: LPE relative-error histogram}\end{figure}
+
+\end{document}

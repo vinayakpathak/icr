@@ -1,0 +1,12 @@
+{
+  "timestamp": 1771026401.192161,
+  "device": "cuda",
+  "k_list": [
+    7
+  ],
+  "suite_csv": "artifacts/markov_k_smoke_k7_batch/suite_summary.csv",
+  "suite_json": "artifacts/markov_k_smoke_k7_batch/suite_summary.json",
+  "report_pdf": null,
+  "report_compiled": null,
+  "r2_prefix": null
+}

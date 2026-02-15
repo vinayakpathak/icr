@@ -1,0 +1,2 @@
+k,model_config,rollout_length,train_seq_len,max_seq_len,batch_size,step1_eval_model_nll,step1_eval_bayes_nll,step1_gap_pct,step2_posterior_mae,step3_lpe_rel_error_median_pct,checkpoint_path
+7,L4_D128_H8_M512,12800,12800,12832,1,0.6891077916243457,0.5549308571594622,24.179036493248564,0.10090085772978329,217.54452863699615,checkpoints/markov_k_smoke_k7_batch/k7/best.pt
