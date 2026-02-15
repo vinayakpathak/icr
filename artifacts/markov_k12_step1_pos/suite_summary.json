@@ -1,0 +1,214 @@
+[
+  {
+    "k": 1,
+    "device": "cuda",
+    "model_config": {
+      "n_layers": 2,
+      "d_model": 64,
+      "n_heads": 4,
+      "d_mlp": 256
+    },
+    "model_config_label": "L2_D64_H4_M256",
+    "use_positional_encoding": true,
+    "rollout_length": 200,
+    "train_seq_len": 200,
+    "max_seq_len": 232,
+    "batch_size": 64,
+    "checkpoint_path": "checkpoints/markov_k12_step1_pos/k1/best.pt",
+    "step1_eval_model_nll": 0.4937806057570568,
+    "step1_eval_bayes_nll": 0.4910493388731954,
+    "step1_gap_pct": 0.5562102761667058,
+    "step2_posterior_mae": NaN,
+    "step2_posterior_rmse": NaN,
+    "step3_lpe_rel_error_median_pct": NaN,
+    "step3_lpe_rel_error_mean_pct": NaN,
+    "prediction_plot": "artifacts/markov_k12_step1_pos/k1/figures/step1_model_vs_bayes.png",
+    "posterior_plot": "",
+    "lpe_hist_plot": "",
+    "posterior_csv": "",
+    "lpe_csv": "",
+    "train_stats": {
+      "final_train_loss": 0.5027485454082489,
+      "last_eval_model_nll": 0.5202933651718062,
+      "last_eval_bayes_nll": 0.5171198852118297,
+      "best_gap_ratio": 0.006136836062060459,
+      "best_step": 2000,
+      "steps_run": 2000,
+      "early_stopped": true
+    },
+    "sweep": {
+      "chosen_config": {
+        "n_layers": 2,
+        "d_model": 64,
+        "n_heads": 4,
+        "d_mlp": 256
+      },
+      "chosen_config_label": "L2_D64_H4_M256",
+      "best_gap": 0.004111599429215535,
+      "results": [
+        {
+          "k": 1,
+          "config": {
+            "n_layers": 2,
+            "d_model": 64,
+            "n_heads": 4,
+            "d_mlp": 256
+          },
+          "config_label": "L2_D64_H4_M256",
+          "sweep_steps": 1500,
+          "batch_size": 64,
+          "train_stats": {
+            "final_train_loss": 0.5006198558211327,
+            "last_eval_model_nll": 0.5212478877311975,
+            "last_eval_bayes_nll": 0.5195305912250099,
+            "best_gap_ratio": 0.0033054771657205573,
+            "best_step": 1400,
+            "steps_run": 1500,
+            "early_stopped": false
+          },
+          "eval_stats": {
+            "model_nll": 0.4933003372882479,
+            "bayes_nll": 0.4912803891207542,
+            "gap_ratio": 0.004111599429215535
+          },
+          "timestamp": 1771180043.9603562
+        }
+      ],
+      "sweep_log_path": "artifacts/markov_k12_step1_pos/k1/k1_sweep.jsonl"
+    },
+    "timestamp": 1771180088.844405
+  },
+  {
+    "k": 2,
+    "device": "cuda",
+    "model_config": {
+      "n_layers": 4,
+      "d_model": 128,
+      "n_heads": 8,
+      "d_mlp": 512
+    },
+    "model_config_label": "L4_D128_H8_M512",
+    "use_positional_encoding": true,
+    "rollout_length": 400,
+    "train_seq_len": 400,
+    "max_seq_len": 432,
+    "batch_size": 32,
+    "checkpoint_path": "checkpoints/markov_k12_step1_pos/k2/best.pt",
+    "step1_eval_model_nll": 0.5181044098129846,
+    "step1_eval_bayes_nll": 0.509205984566519,
+    "step1_gap_pct": 1.7475099500334195,
+    "step2_posterior_mae": NaN,
+    "step2_posterior_rmse": NaN,
+    "step3_lpe_rel_error_median_pct": NaN,
+    "step3_lpe_rel_error_mean_pct": NaN,
+    "prediction_plot": "artifacts/markov_k12_step1_pos/k2/figures/step1_model_vs_bayes.png",
+    "posterior_plot": "",
+    "lpe_hist_plot": "",
+    "posterior_csv": "",
+    "lpe_csv": "",
+    "train_stats": {
+      "final_train_loss": 0.49758675426244736,
+      "last_eval_model_nll": 0.5008661991970282,
+      "last_eval_bayes_nll": 0.49068094522071387,
+      "best_gap_ratio": 0.020757386394397125,
+      "best_step": 2000,
+      "steps_run": 2000,
+      "early_stopped": true
+    },
+    "sweep": {
+      "chosen_config": {
+        "n_layers": 4,
+        "d_model": 128,
+        "n_heads": 8,
+        "d_mlp": 512
+      },
+      "chosen_config_label": "L4_D128_H8_M512",
+      "best_gap": 0.014735156316527076,
+      "results": [
+        {
+          "k": 2,
+          "config": {
+            "n_layers": 2,
+            "d_model": 64,
+            "n_heads": 4,
+            "d_mlp": 256
+          },
+          "config_label": "L2_D64_H4_M256",
+          "sweep_steps": 1500,
+          "batch_size": 32,
+          "train_stats": {
+            "final_train_loss": 0.5418218401074409,
+            "last_eval_model_nll": 0.5657036573367011,
+            "last_eval_bayes_nll": 0.5075996871584915,
+            "best_gap_ratio": 0.11446809690421944,
+            "best_step": 1400,
+            "steps_run": 1500,
+            "early_stopped": false
+          },
+          "eval_stats": {
+            "model_nll": 0.5377188613241478,
+            "bayes_nll": 0.49267425735835046,
+            "gap_ratio": 0.09142877528718495
+          },
+          "timestamp": 1771180141.435779
+        },
+        {
+          "k": 2,
+          "config": {
+            "n_layers": 3,
+            "d_model": 96,
+            "n_heads": 6,
+            "d_mlp": 384
+          },
+          "config_label": "L3_D96_H6_M384",
+          "sweep_steps": 1500,
+          "batch_size": 32,
+          "train_stats": {
+            "final_train_loss": 0.5141201189160347,
+            "last_eval_model_nll": 0.5335880891422281,
+            "last_eval_bayes_nll": 0.49540610312774797,
+            "best_gap_ratio": 0.07707209453702336,
+            "best_step": 1400,
+            "steps_run": 1500,
+            "early_stopped": false
+          },
+          "eval_stats": {
+            "model_nll": 0.5251582774303312,
+            "bayes_nll": 0.5056860329897763,
+            "gap_ratio": 0.03850658940574007
+          },
+          "timestamp": 1771180198.319484
+        },
+        {
+          "k": 2,
+          "config": {
+            "n_layers": 4,
+            "d_model": 128,
+            "n_heads": 8,
+            "d_mlp": 512
+          },
+          "config_label": "L4_D128_H8_M512",
+          "sweep_steps": 1500,
+          "batch_size": 32,
+          "train_stats": {
+            "final_train_loss": 0.49477683573961256,
+            "last_eval_model_nll": 0.5043870309241733,
+            "last_eval_bayes_nll": 0.49510843674667726,
+            "best_gap_ratio": 0.018740529324171855,
+            "best_step": 1400,
+            "steps_run": 1500,
+            "early_stopped": false
+          },
+          "eval_stats": {
+            "model_nll": 0.49950886011721196,
+            "bayes_nll": 0.4922553998527275,
+            "gap_ratio": 0.014735156316527076
+          },
+          "timestamp": 1771180259.1446507
+        }
+      ],
+      "sweep_log_path": "artifacts/markov_k12_step1_pos/k2/k2_sweep.jsonl"
+    },
+    "timestamp": 1771180343.280489
+  }
+]

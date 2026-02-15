@@ -1,0 +1,3 @@
+k,model_config,use_positional_encoding,rollout_length,train_seq_len,max_seq_len,batch_size,step1_eval_model_nll,step1_eval_bayes_nll,step1_gap_pct,step2_posterior_mae,step3_lpe_rel_error_median_pct,checkpoint_path
+1,L2_D64_H4_M256,True,200,200,232,64,0.4937806057570568,0.4910493388731954,0.5562102761667058,nan,nan,checkpoints/markov_k12_step1_pos/k1/best.pt
+2,L4_D128_H8_M512,True,400,400,432,32,0.5181044098129846,0.509205984566519,1.7475099500334195,nan,nan,checkpoints/markov_k12_step1_pos/k2/best.pt

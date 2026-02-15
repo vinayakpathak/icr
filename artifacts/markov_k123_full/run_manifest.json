@@ -1,0 +1,12 @@
+{
+  "k_list": [
+    1,
+    2,
+    3
+  ],
+  "suite_csv": "artifacts/markov_k123_full/suite_summary.csv",
+  "suite_json": "artifacts/markov_k123_full/suite_summary.json",
+  "report_tex": "latex/markov_k123_lpe_report.tex",
+  "report_pdf": "latex/markov_k123_lpe_report.pdf",
+  "report_compiled": true
+}

@@ -1,0 +1,46 @@
+{
+  "k": 3,
+  "device": "cuda",
+  "model_config": {
+    "n_layers": 6,
+    "d_model": 128,
+    "n_heads": 8,
+    "d_mlp": 512
+  },
+  "model_config_label": "L6_D128_H8_M512",
+  "use_positional_encoding": true,
+  "quality_gate_required_gap_pct": 3.0,
+  "quality_gate_passed": true,
+  "rollout_length": 800,
+  "train_seq_len": 800,
+  "max_seq_len": 832,
+  "batch_size": 16,
+  "checkpoint_path": "checkpoints/markov_k12_step1_pos/k3/best.pt",
+  "step1_eval_model_nll": 0.4985946492945894,
+  "step1_eval_bayes_nll": 0.4895658018996048,
+  "step1_gap_pct": 1.844256146967584,
+  "step2_posterior_mae": 0.06466420477049831,
+  "step2_posterior_rmse": 0.07791577929949393,
+  "step3_lpe_rel_error_median_pct": 128.16316687615304,
+  "step3_lpe_rel_error_mean_pct": 94568230.32232025,
+  "prediction_plot": "artifacts/markov_k123_full/k3/figures/step1_model_vs_bayes.png",
+  "posterior_plot": "artifacts/markov_k123_full/k3/figures/step2_posterior_mean_scatter.png",
+  "lpe_hist_plot": "artifacts/markov_k123_full/k3/figures/step3_lpe_rel_error_hist.png",
+  "posterior_csv": "artifacts/markov_k123_full/k3/step2_posterior_state_metrics.csv",
+  "lpe_csv": "artifacts/markov_k123_full/k3/step3_lpe_metrics.csv",
+  "train_stats": {},
+  "sweep": {
+    "chosen_config": {
+      "n_layers": 6,
+      "d_model": 128,
+      "n_heads": 8,
+      "d_mlp": 512
+    },
+    "chosen_config_label": "L6_D128_H8_M512",
+    "best_gap": NaN,
+    "results": [],
+    "sweep_log_path": "",
+    "override": true
+  },
+  "timestamp": 1771185460.1484087
+}

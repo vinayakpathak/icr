@@ -9,7 +9,7 @@ This script implements:
 - Step 4: Artifact generation suitable for LaTeX reporting
 
 Design constraints from lpe/todo.md:
-- No positional encoding (reuses MarkovTransformer architecture)
+- Supports optional positional encoding (disabled by default)
 - Training sequence length equals inference rollout length (100 * 2^k)
 - No sliding-window generation for posterior rollouts
 """
@@ -48,6 +48,46 @@ class ModelConfig:
 
     def label(self) -> str:
         return f"L{self.n_layers}_D{self.d_model}_H{self.n_heads}_M{self.d_mlp}"
+
+
+class PositionalMarkovTransformer(MarkovTransformer):
+    """MarkovTransformer variant with learned absolute positional embeddings."""
+
+    def __init__(
+        self,
+        max_seq_len: int,
+        d_model: int,
+        n_layers: int,
+        n_heads: int,
+        d_mlp: int,
+        use_prenorm: bool = True,
+    ):
+        if max_seq_len is None:
+            raise ValueError("PositionalMarkovTransformer requires max_seq_len.")
+        super().__init__(
+            max_seq_len=max_seq_len,
+            d_model=d_model,
+            n_layers=n_layers,
+            n_heads=n_heads,
+            d_mlp=d_mlp,
+            use_prenorm=use_prenorm,
+        )
+        self.pos_emb = torch.nn.Embedding(max_seq_len, d_model)
+        torch.nn.init.normal_(self.pos_emb.weight, mean=0.0, std=0.02)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        B, T = x.shape
+        if self.max_seq_len is not None and T > self.max_seq_len:
+            raise ValueError(f"Sequence length {T} exceeds max_seq_len={self.max_seq_len}")
+        tok = self.token_emb(x)
+        pos_ids = torch.arange(T, device=x.device).unsqueeze(0).expand(B, T)
+        x = tok + self.pos_emb(pos_ids)
+        mask = torch.triu(torch.ones(T, T, dtype=torch.bool, device=x.device), diagonal=1)
+        for block in self.blocks:
+            x = block(x, mask)
+        x = self.ln_f(x)
+        logits = self.output_proj(x)
+        return logits
 
 
 def set_seed(seed: int) -> None:
@@ -90,6 +130,22 @@ def default_model_grid() -> List[ModelConfig]:
         ModelConfig(4, 128, 8, 512),
         ModelConfig(6, 128, 8, 512),
     ]
+
+
+def build_override_config(args: argparse.Namespace, k: int) -> Optional[ModelConfig]:
+    if args.n_layers is None and args.d_model is None and args.n_heads is None and args.d_mlp is None:
+        return None
+    if args.n_layers is None or args.d_model is None:
+        raise ValueError("When overriding model config, provide both --n-layers and --d-model.")
+    d_model = int(args.d_model)
+    n_layers = int(args.n_layers)
+    n_heads = int(args.n_heads) if args.n_heads is not None else max(1, d_model // 32)
+    if d_model % n_heads != 0:
+        raise ValueError(f"d_model={d_model} must be divisible by n_heads={n_heads}.")
+    d_mlp = int(args.d_mlp) if args.d_mlp is not None else d_model * 4
+    if k >= 5 and d_model < 128:
+        print(f"[k={k}] Warning: d_model={d_model} may be too small for higher-order setting.", flush=True)
+    return ModelConfig(n_layers=n_layers, d_model=d_model, n_heads=n_heads, d_mlp=d_mlp)
 
 
 def model_config_for_k(k: int) -> ModelConfig:
@@ -316,7 +372,16 @@ def bayes_optimal_nll_batch(
     return float((total_nll / ((T - 1) * B)).item())
 
 
-def build_model(config: ModelConfig, max_seq_len: int) -> MarkovTransformer:
+def build_model(config: ModelConfig, max_seq_len: int, use_positional_encoding: bool) -> MarkovTransformer:
+    if use_positional_encoding:
+        return PositionalMarkovTransformer(
+            max_seq_len=max_seq_len,
+            d_model=config.d_model,
+            n_layers=config.n_layers,
+            n_heads=config.n_heads,
+            d_mlp=config.d_mlp,
+            use_prenorm=True,
+        )
     return MarkovTransformer(
         max_seq_len=max_seq_len,
         d_model=config.d_model,
@@ -332,6 +397,7 @@ def train_model(
     k: int,
     seq_len: int,
     batch_size: int,
+    grad_accum_steps: int,
     num_steps: int,
     learning_rate: float,
     warmup_steps: int,
@@ -343,9 +409,12 @@ def train_model(
     eval_every: int,
     eval_batches: int,
     checkpoint_path: Optional[Path],
+    target_gap_ratio: Optional[float] = None,
+    min_steps_before_stop: int = 0,
 ) -> Dict[str, float]:
     model = model.to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=0.01)
+    grad_accum_steps = max(1, int(grad_accum_steps))
 
     def get_lr(step: int) -> float:
         if warmup_steps <= 0:
@@ -358,18 +427,24 @@ def train_model(
     recent_losses: List[float] = []
     last_eval_model_nll = float("nan")
     last_eval_bayes_nll = float("nan")
+    best_gap_ratio = float("inf")
+    best_step = -1
+    steps_run = 0
+    early_stopped = False
 
     for step in range(num_steps):
+        steps_run = step + 1
         model.train()
-        seqs = sample_markov_k_batch(batch_size, seq_len, k, alpha=alpha, beta=beta, device=device)
-        inputs = seqs[:, :-1]
-        targets = seqs[:, 1:]
-
-        logits = model(inputs)
-        loss = F.cross_entropy(logits.reshape(-1, 2), targets.reshape(-1))
-
         optimizer.zero_grad(set_to_none=True)
-        loss.backward()
+        micro_losses: List[float] = []
+        for _ in range(grad_accum_steps):
+            seqs = sample_markov_k_batch(batch_size, seq_len, k, alpha=alpha, beta=beta, device=device)
+            inputs = seqs[:, :-1]
+            targets = seqs[:, 1:]
+            logits = model(inputs)
+            loss = F.cross_entropy(logits.reshape(-1, 2), targets.reshape(-1))
+            micro_losses.append(float(loss.item()))
+            (loss / grad_accum_steps).backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
 
         lr = get_lr(step)
@@ -377,7 +452,8 @@ def train_model(
             g["lr"] = lr
         optimizer.step()
 
-        recent_losses.append(float(loss.item()))
+        step_loss = float(np.mean(micro_losses)) if micro_losses else float("nan")
+        recent_losses.append(step_loss)
         if len(recent_losses) > 100:
             recent_losses.pop(0)
 
@@ -394,6 +470,25 @@ def train_model(
             )
             last_eval_model_nll = eval_stats["model_nll"]
             last_eval_bayes_nll = eval_stats["bayes_nll"]
+            current_gap = float(eval_stats["gap_ratio"])
+            if current_gap < best_gap_ratio:
+                best_gap_ratio = current_gap
+                best_step = step + 1
+                if checkpoint_path is not None:
+                    checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+                    torch.save(model.state_dict(), checkpoint_path)
+            if (
+                target_gap_ratio is not None
+                and step + 1 >= int(min_steps_before_stop)
+                and current_gap <= float(target_gap_ratio)
+            ):
+                early_stopped = True
+                print(
+                    f"[k={k}] Early stop at step {step + 1}: gap={100.0*current_gap:.2f}% "
+                    f"(target <= {100.0*float(target_gap_ratio):.2f}%)",
+                    flush=True,
+                )
+                break
 
         if print_every > 0 and (step + 1) % print_every == 0:
             avg_loss = float(np.mean(recent_losses)) if recent_losses else float("nan")
@@ -410,7 +505,7 @@ def train_model(
                 )
             print(msg, flush=True)
 
-    if checkpoint_path is not None:
+    if checkpoint_path is not None and best_step < 0:
         checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
         torch.save(model.state_dict(), checkpoint_path)
 
@@ -418,6 +513,10 @@ def train_model(
         "final_train_loss": float(np.mean(recent_losses)) if recent_losses else float("nan"),
         "last_eval_model_nll": float(last_eval_model_nll),
         "last_eval_bayes_nll": float(last_eval_bayes_nll),
+        "best_gap_ratio": float(best_gap_ratio),
+        "best_step": int(best_step),
+        "steps_run": int(steps_run),
+        "early_stopped": bool(early_stopped),
     }
 
 
@@ -607,6 +706,9 @@ def rollout_with_cache(
 
     def step_token(token_id: torch.Tensor, pos: int) -> torch.Tensor:
         x = model.token_emb(token_id.view(1, 1))
+        if hasattr(model, "pos_emb"):
+            pos_ids = torch.tensor([[pos]], device=device, dtype=torch.long)
+            x = x + model.pos_emb(pos_ids)
         for layer_idx, block in enumerate(model.blocks):
             if model.use_prenorm:
                 h = block.ln1(x)
@@ -691,6 +793,9 @@ def rollout_with_cache_batch(
 
     def step_tokens(token_ids: torch.Tensor, pos: int) -> torch.Tensor:
         x = model.token_emb(token_ids.long()).unsqueeze(1)  # (B, 1, D)
+        if hasattr(model, "pos_emb"):
+            pos_ids = torch.full((batch_size, 1), pos, device=device, dtype=torch.long)
+            x = x + model.pos_emb(pos_ids)
         for layer_idx, block in enumerate(model.blocks):
             if model.use_prenorm:
                 h = block.ln1(x)
@@ -752,9 +857,11 @@ def run_arch_sweep(
     k: int,
     seq_len: int,
     max_seq_len: int,
+    use_positional_encoding: bool,
     grid: Sequence[ModelConfig],
     sweep_steps: int,
     batch_size: int,
+    grad_accum_steps: int,
     learning_rate: float,
     warmup_steps: int,
     grad_clip: float,
@@ -777,13 +884,14 @@ def run_arch_sweep(
     with sweep_log_path.open("w", encoding="utf-8") as fp:
         for idx, cfg in enumerate(grid):
             print(f"\n[k={k}] sweep {idx + 1}/{len(grid)}: {cfg.label()}", flush=True)
-            model = build_model(cfg, max_seq_len=max_seq_len)
+            model = build_model(cfg, max_seq_len=max_seq_len, use_positional_encoding=use_positional_encoding)
             sweep_warmup = min(max(1, warmup_steps // 2), max(1, sweep_steps // 10))
             train_stats = train_model(
                 model=model,
                 k=k,
                 seq_len=seq_len,
                 batch_size=batch_size,
+                grad_accum_steps=grad_accum_steps,
                 num_steps=sweep_steps,
                 learning_rate=learning_rate,
                 warmup_steps=sweep_warmup,
@@ -795,6 +903,8 @@ def run_arch_sweep(
                 eval_every=max(1, eval_every),
                 eval_batches=eval_batches,
                 checkpoint_path=None,
+                target_gap_ratio=None,
+                min_steps_before_stop=0,
             )
             eval_stats = evaluate_model_vs_bayes(
                 model=model,
@@ -903,15 +1013,28 @@ def run_single_k(
     checkpoint_path = Path(args.checkpoint_root) / f"k{k}" / "best.pt"
     checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
 
-    if args.use_sweep:
+    override_config = build_override_config(args, k=k)
+    if override_config is not None:
+        config = override_config
+        sweep = {
+            "chosen_config": asdict(config),
+            "chosen_config_label": config.label(),
+            "best_gap": float("nan"),
+            "results": [],
+            "sweep_log_path": "",
+            "override": True,
+        }
+    elif args.use_sweep:
         grid = default_model_grid()
         sweep = run_arch_sweep(
             k=k,
             seq_len=train_seq_len,
             max_seq_len=max_seq_len,
+            use_positional_encoding=bool(args.use_positional_encoding),
             grid=grid,
             sweep_steps=int(args.sweep_steps),
             batch_size=batch_size,
+            grad_accum_steps=int(args.grad_accum_steps),
             learning_rate=float(args.learning_rate),
             warmup_steps=int(args.warmup_steps),
             grad_clip=float(args.grad_clip),
@@ -936,7 +1059,11 @@ def run_single_k(
             "sweep_log_path": "",
         }
 
-    model = build_model(config, max_seq_len=max_seq_len)
+    model = build_model(
+        config,
+        max_seq_len=max_seq_len,
+        use_positional_encoding=bool(args.use_positional_encoding),
+    )
 
     should_train = True
     if args.skip_existing and checkpoint_path.exists():
@@ -955,7 +1082,8 @@ def run_single_k(
         print(
             f"[k={k}] training config={config.label()} seq_len={train_seq_len} rollout_len={rollout_len} "
             f"batch_size={batch_size} steps={num_steps} warmup_steps={effective_warmup_steps} "
-            f"max_seq_len={max_seq_len}",
+            f"grad_accum_steps={int(args.grad_accum_steps)} max_seq_len={max_seq_len} "
+            f"positional_encoding={bool(args.use_positional_encoding)}",
             flush=True,
         )
         train_stats = train_model(
@@ -963,6 +1091,7 @@ def run_single_k(
             k=k,
             seq_len=train_seq_len,
             batch_size=batch_size,
+            grad_accum_steps=int(args.grad_accum_steps),
             num_steps=num_steps,
             learning_rate=float(args.learning_rate),
             warmup_steps=effective_warmup_steps,
@@ -974,6 +1103,8 @@ def run_single_k(
             eval_every=int(args.eval_every),
             eval_batches=int(args.eval_batches),
             checkpoint_path=checkpoint_path,
+            target_gap_ratio=float(args.target_gap_pct) / 100.0 if args.target_gap_pct is not None else None,
+            min_steps_before_stop=int(args.min_steps_before_stop),
         )
     else:
         model.load_state_dict(torch.load(checkpoint_path, map_location=device))
@@ -1008,6 +1139,89 @@ def run_single_k(
         pred_plot_path,
         title=f"k={k} next-bit predictions",
     )
+
+    gap_pct = float(eval_stats["gap_ratio"] * 100.0)
+    gate_failed = False
+    if args.require_gap_pct is not None:
+        gate_failed = bool(gap_pct > float(args.require_gap_pct))
+
+    if gate_failed and args.fail_on_gap:
+        raise RuntimeError(
+            f"k={k} quality gate failed: gap={gap_pct:.3f}% > required {float(args.require_gap_pct):.3f}%"
+        )
+
+    if args.step1_only:
+        k_summary_step1: Dict[str, object] = {
+            "k": k,
+            "device": str(device),
+            "model_config": asdict(config),
+            "model_config_label": config.label(),
+            "use_positional_encoding": bool(args.use_positional_encoding),
+            "quality_gate_required_gap_pct": float(args.require_gap_pct) if args.require_gap_pct is not None else None,
+            "quality_gate_passed": not gate_failed,
+            "rollout_length": rollout_len,
+            "train_seq_len": train_seq_len,
+            "max_seq_len": max_seq_len,
+            "batch_size": batch_size,
+            "checkpoint_path": str(checkpoint_path),
+            "step1_eval_model_nll": float(eval_stats["model_nll"]),
+            "step1_eval_bayes_nll": float(eval_stats["bayes_nll"]),
+            "step1_gap_pct": gap_pct,
+            "step2_posterior_mae": float("nan"),
+            "step2_posterior_rmse": float("nan"),
+            "step3_lpe_rel_error_median_pct": float("nan"),
+            "step3_lpe_rel_error_mean_pct": float("nan"),
+            "prediction_plot": str(pred_plot_path),
+            "posterior_plot": "",
+            "lpe_hist_plot": "",
+            "posterior_csv": "",
+            "lpe_csv": "",
+            "train_stats": train_stats,
+            "sweep": sweep,
+            "timestamp": time.time(),
+        }
+        with (k_dir / "summary.json").open("w", encoding="utf-8") as f:
+            json.dump(k_summary_step1, f, indent=2)
+        return k_summary_step1
+
+    if gate_failed:
+        print(
+            f"[k={k}] Skipping Step 2/3 because quality gate failed: "
+            f"gap={gap_pct:.3f}% > required {float(args.require_gap_pct):.3f}%",
+            flush=True,
+        )
+        k_summary_blocked: Dict[str, object] = {
+            "k": k,
+            "device": str(device),
+            "model_config": asdict(config),
+            "model_config_label": config.label(),
+            "use_positional_encoding": bool(args.use_positional_encoding),
+            "quality_gate_required_gap_pct": float(args.require_gap_pct),
+            "quality_gate_passed": False,
+            "rollout_length": rollout_len,
+            "train_seq_len": train_seq_len,
+            "max_seq_len": max_seq_len,
+            "batch_size": batch_size,
+            "checkpoint_path": str(checkpoint_path),
+            "step1_eval_model_nll": float(eval_stats["model_nll"]),
+            "step1_eval_bayes_nll": float(eval_stats["bayes_nll"]),
+            "step1_gap_pct": gap_pct,
+            "step2_posterior_mae": float("nan"),
+            "step2_posterior_rmse": float("nan"),
+            "step3_lpe_rel_error_median_pct": float("nan"),
+            "step3_lpe_rel_error_mean_pct": float("nan"),
+            "prediction_plot": str(pred_plot_path),
+            "posterior_plot": "",
+            "lpe_hist_plot": "",
+            "posterior_csv": "",
+            "lpe_csv": "",
+            "train_stats": train_stats,
+            "sweep": sweep,
+            "timestamp": time.time(),
+        }
+        with (k_dir / "summary.json").open("w", encoding="utf-8") as f:
+            json.dump(k_summary_blocked, f, indent=2)
+        return k_summary_blocked
 
     context_for_posterior = sample_markov_k_batch(
         1,
@@ -1135,12 +1349,14 @@ def run_single_k(
     plt.savefig(lpe_hist_path, dpi=150)
     plt.close(fig)
 
-    gap_pct = float(eval_stats["gap_ratio"] * 100.0)
     k_summary: Dict[str, object] = {
         "k": k,
         "device": str(device),
         "model_config": asdict(config),
         "model_config_label": config.label(),
+        "use_positional_encoding": bool(args.use_positional_encoding),
+        "quality_gate_required_gap_pct": float(args.require_gap_pct) if args.require_gap_pct is not None else None,
+        "quality_gate_passed": not gate_failed,
         "rollout_length": rollout_len,
         "train_seq_len": train_seq_len,
         "max_seq_len": max_seq_len,
@@ -1274,6 +1490,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--k-list", type=str, default="1,2,3,4,5,6,7")
     p.add_argument("--seed", type=int, default=123)
     p.add_argument("--device", type=str, default=None)
+    p.add_argument("--use-positional-encoding", action="store_true")
 
     p.add_argument("--alpha", type=float, default=1.0)
     p.add_argument("--beta", type=float, default=1.0)
@@ -1283,10 +1500,27 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--max-seq-len", type=int, default=None)
 
     p.add_argument("--batch-size", type=int, default=None)
+    p.add_argument("--grad-accum-steps", type=int, default=1)
+    p.add_argument("--n-layers", type=int, default=None, help="Override model layers (disables sweep).")
+    p.add_argument("--d-model", type=int, default=None, help="Override model width (disables sweep).")
+    p.add_argument("--n-heads", type=int, default=None, help="Override model attention heads.")
+    p.add_argument("--d-mlp", type=int, default=None, help="Override model MLP hidden dimension.")
     p.add_argument("--num-steps", type=int, default=None)
     p.add_argument("--target-train-tokens", type=float, default=2e7)
     p.add_argument("--learning-rate", type=float, default=3e-4)
     p.add_argument("--warmup-steps", type=int, default=2000)
+    p.add_argument(
+        "--target-gap-pct",
+        type=float,
+        default=3.0,
+        help="Early-stop target for Step 1 gap in percent (model-vs-Bayes NLL).",
+    )
+    p.add_argument(
+        "--min-steps-before-stop",
+        type=int,
+        default=1000,
+        help="Minimum training steps before enabling early stop on target gap.",
+    )
     p.add_argument("--grad-clip", type=float, default=1.0)
     p.add_argument("--print-every", type=int, default=50)
     p.add_argument("--eval-every", type=int, default=200)
@@ -1314,6 +1548,18 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--skip-existing", action="store_true")
     p.add_argument("--upload-r2", action="store_true")
     p.add_argument("--no-report", action="store_true")
+    p.add_argument("--step1-only", action="store_true")
+    p.add_argument(
+        "--require-gap-pct",
+        type=float,
+        default=None,
+        help="If set, Step 2/3 run only when Step 1 gap <= this threshold.",
+    )
+    p.add_argument(
+        "--fail-on-gap",
+        action="store_true",
+        help="If quality gate fails, raise an error instead of just skipping Step 2/3.",
+    )
 
     return p
 
@@ -1346,6 +1592,8 @@ def main() -> None:
             {
                 "k": int(s["k"]),
                 "model_config": str(s["model_config_label"]),
+                "use_positional_encoding": bool(s.get("use_positional_encoding", False)),
+                "quality_gate_passed": bool(s.get("quality_gate_passed", True)),
                 "rollout_length": int(s["rollout_length"]),
                 "train_seq_len": int(s["train_seq_len"]),
                 "max_seq_len": int(s["max_seq_len"]),

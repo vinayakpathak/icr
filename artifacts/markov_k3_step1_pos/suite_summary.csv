@@ -1,0 +1,2 @@
+k,model_config,use_positional_encoding,quality_gate_passed,rollout_length,train_seq_len,max_seq_len,batch_size,step1_eval_model_nll,step1_eval_bayes_nll,step1_gap_pct,step2_posterior_mae,step3_lpe_rel_error_median_pct,checkpoint_path
+3,L6_D128_H8_M512,True,True,800,800,832,16,0.5067702855574473,0.4983237721903451,1.694985035527434,nan,nan,checkpoints/markov_k12_step1_pos/k3/best.pt
