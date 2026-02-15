@@ -88,3 +88,4 @@ checkpoints*/
 # Scratch Markov-k experiment outputs
 artifacts/markov_k12_step1_pos_smoke/
 artifacts/markov_k4_step1_pos/
+artifacts/markov_k123_bayes_baseline_smoke/

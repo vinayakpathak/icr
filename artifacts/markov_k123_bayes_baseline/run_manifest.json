@@ -1,0 +1,11 @@
+{
+  "timestamp": 1771187558.6003697,
+  "k_list": [
+    1,
+    2,
+    3
+  ],
+  "suite_csv": "artifacts/markov_k123_bayes_baseline/suite_summary.csv",
+  "suite_json": "artifacts/markov_k123_bayes_baseline/suite_summary.json",
+  "transformer_dir": "artifacts/markov_k123_full"
+}
