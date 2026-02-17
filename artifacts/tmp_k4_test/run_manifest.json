@@ -1,0 +1,12 @@
+{
+  "timestamp": 1771213767.6787114,
+  "device": "cuda",
+  "k_list": [
+    4
+  ],
+  "suite_csv": "artifacts/tmp_k4_test/suite_summary.csv",
+  "suite_json": "artifacts/tmp_k4_test/suite_summary.json",
+  "report_pdf": null,
+  "report_compiled": null,
+  "r2_prefix": null
+}

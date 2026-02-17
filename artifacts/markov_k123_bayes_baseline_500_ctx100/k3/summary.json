@@ -1,0 +1,15 @@
+{
+  "k": 3,
+  "baseline_name": "true_bayes_predictive",
+  "rollout_length": 800,
+  "num_posterior_samples": 500,
+  "step2_posterior_mae": 0.005992307546742879,
+  "step2_posterior_rmse": 0.0074201929667546,
+  "step3_lpe_rel_error_median_pct": 99.99999919472282,
+  "step3_lpe_rel_error_mean_pct": 17381128589.60972,
+  "posterior_plot": "artifacts/markov_k123_bayes_baseline_500_ctx100/k3/figures/step2_posterior_mean_scatter_bayes_baseline.png",
+  "lpe_hist_plot": "artifacts/markov_k123_bayes_baseline_500_ctx100/k3/figures/step3_lpe_rel_error_hist_bayes_baseline.png",
+  "posterior_csv": "artifacts/markov_k123_bayes_baseline_500_ctx100/k3/step2_posterior_state_metrics.csv",
+  "lpe_csv": "artifacts/markov_k123_bayes_baseline_500_ctx100/k3/step3_lpe_metrics.csv",
+  "timestamp": 1771191270.0389743
+}

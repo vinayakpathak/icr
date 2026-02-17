@@ -1,0 +1,12 @@
+{
+  "timestamp": 1771213306.92446,
+  "device": "cuda",
+  "k_list": [
+    4
+  ],
+  "suite_csv": "artifacts/markov_k456_memcheck/k4/suite_summary.csv",
+  "suite_json": "artifacts/markov_k456_memcheck/k4/suite_summary.json",
+  "report_pdf": null,
+  "report_compiled": null,
+  "r2_prefix": null
+}

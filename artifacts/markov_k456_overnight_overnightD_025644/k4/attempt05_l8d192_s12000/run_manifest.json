@@ -1,0 +1,12 @@
+{
+  "timestamp": 1771303772.85808,
+  "device": "cuda",
+  "k_list": [
+    4
+  ],
+  "suite_csv": "artifacts/markov_k456_overnight_overnightD_025644/k4/attempt05_l8d192_s12000/suite_summary.csv",
+  "suite_json": "artifacts/markov_k456_overnight_overnightD_025644/k4/attempt05_l8d192_s12000/suite_summary.json",
+  "report_pdf": null,
+  "report_compiled": null,
+  "r2_prefix": null
+}

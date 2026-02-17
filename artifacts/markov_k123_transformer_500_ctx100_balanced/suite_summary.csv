@@ -1,0 +1,4 @@
+k,model_config,use_positional_encoding,target_mode,quality_gate_passed,rollout_length,train_seq_len,max_seq_len,batch_size,step1_eval_model_nll,step1_eval_bayes_nll,step1_gap_pct,step2_posterior_mae,step3_lpe_rel_error_median_pct,checkpoint_path
+1,L2_D64_H4_M256,True,balanced,True,200,200,232,64,0.426467962600478,0.42305143259218564,0.8075921141214564,0.010084054923407304,99.99999988729621,checkpoints/markov_k12_step1_pos/k1/best.pt
+2,L4_D128_H8_M512,True,balanced,True,400,400,432,32,0.5168148126817287,0.5062159242999116,2.093748511857899,0.09030162494614148,99.9999999887269,checkpoints/markov_k12_step1_pos/k2/best.pt
+3,L6_D128_H8_M512,True,balanced,True,800,800,832,16,0.52498049968772,0.5149220332493717,1.9533960073285646,0.07432414406135832,99.99999358170155,checkpoints/markov_k12_step1_pos/k3/best.pt

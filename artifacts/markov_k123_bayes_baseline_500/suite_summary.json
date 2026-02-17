@@ -1,0 +1,47 @@
+[
+  {
+    "k": 1,
+    "baseline_name": "true_bayes_predictive",
+    "rollout_length": 200,
+    "num_posterior_samples": 500,
+    "step2_posterior_mae": 0.003266395215694551,
+    "step2_posterior_rmse": 0.0037877178362698614,
+    "step3_lpe_rel_error_median_pct": 1658817600.147489,
+    "step3_lpe_rel_error_mean_pct": 61164265602.51759,
+    "posterior_plot": "artifacts/markov_k123_bayes_baseline_500/k1/figures/step2_posterior_mean_scatter_bayes_baseline.png",
+    "lpe_hist_plot": "artifacts/markov_k123_bayes_baseline_500/k1/figures/step3_lpe_rel_error_hist_bayes_baseline.png",
+    "posterior_csv": "artifacts/markov_k123_bayes_baseline_500/k1/step2_posterior_state_metrics.csv",
+    "lpe_csv": "artifacts/markov_k123_bayes_baseline_500/k1/step3_lpe_metrics.csv",
+    "timestamp": 1771188039.9842436
+  },
+  {
+    "k": 2,
+    "baseline_name": "true_bayes_predictive",
+    "rollout_length": 400,
+    "num_posterior_samples": 500,
+    "step2_posterior_mae": 0.019138221214556272,
+    "step2_posterior_rmse": 0.020008475545024346,
+    "step3_lpe_rel_error_median_pct": 45450132.870516405,
+    "step3_lpe_rel_error_mean_pct": 4173259351.2621813,
+    "posterior_plot": "artifacts/markov_k123_bayes_baseline_500/k2/figures/step2_posterior_mean_scatter_bayes_baseline.png",
+    "lpe_hist_plot": "artifacts/markov_k123_bayes_baseline_500/k2/figures/step3_lpe_rel_error_hist_bayes_baseline.png",
+    "posterior_csv": "artifacts/markov_k123_bayes_baseline_500/k2/step2_posterior_state_metrics.csv",
+    "lpe_csv": "artifacts/markov_k123_bayes_baseline_500/k2/step3_lpe_metrics.csv",
+    "timestamp": 1771188079.4557874
+  },
+  {
+    "k": 3,
+    "baseline_name": "true_bayes_predictive",
+    "rollout_length": 800,
+    "num_posterior_samples": 500,
+    "step2_posterior_mae": 0.013119418996739813,
+    "step2_posterior_rmse": 0.017166838270800025,
+    "step3_lpe_rel_error_median_pct": 521.350887030799,
+    "step3_lpe_rel_error_mean_pct": 688712397.1942855,
+    "posterior_plot": "artifacts/markov_k123_bayes_baseline_500/k3/figures/step2_posterior_mean_scatter_bayes_baseline.png",
+    "lpe_hist_plot": "artifacts/markov_k123_bayes_baseline_500/k3/figures/step3_lpe_rel_error_hist_bayes_baseline.png",
+    "posterior_csv": "artifacts/markov_k123_bayes_baseline_500/k3/step2_posterior_state_metrics.csv",
+    "lpe_csv": "artifacts/markov_k123_bayes_baseline_500/k3/step3_lpe_metrics.csv",
+    "timestamp": 1771188156.7496083
+  }
+]

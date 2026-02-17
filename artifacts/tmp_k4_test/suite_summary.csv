@@ -1,0 +1,2 @@
+k,model_config,use_positional_encoding,target_mode,quality_gate_passed,rollout_length,train_seq_len,max_seq_len,batch_size,step1_eval_model_nll,step1_eval_bayes_nll,step1_gap_pct,step2_posterior_mae,step3_lpe_rel_error_median_pct,steps_run,best_step,training_history_csv,training_curve_plot,checkpoint_path
+4,L8_D192_H8_M768,True,random,False,1600,1600,1632,1,0.8845278970743433,0.5087453583594069,73.8645635857501,nan,nan,2,2,artifacts/tmp_k4_test/k4/training_history.csv,artifacts/tmp_k4_test/k4/figures/step1_training_curve.png,checkpoints/tmp_k4_test/k4/best.pt

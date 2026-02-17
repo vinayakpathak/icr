@@ -1,0 +1,168 @@
+
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{float}
+\usepackage{amsmath}
+\title{Bernoulli Transformer LPE Report}
+\author{Automated run}
+\date{\today}
+\begin{document}
+\maketitle
+
+\section*{Artifacts Used}
+\begin{itemize}
+\item Checkpoint: \texttt{checkpoints/bernoulli\_transformer\_L1\_D16\_seq1024.pt}
+\item Training/diagnostics log: \texttt{logs/bernoulli\_diagnostics\_seq1024\_M200\_L1000.log}
+\item Diagnostics CSV: \texttt{plots/bernoulli\_posterior\_sampling\_diagnostics.csv}
+\end{itemize}
+
+\section*{1. Model Architecture}
+\begin{table}[H]
+\centering
+\begin{tabular}{ll}
+\toprule
+Field & Value \\
+\midrule
+Transformer type & Decoder-only, causal self-attention \\
+Positional encoding & none \\
+Layers ($L$) & 1 \\
+Model width ($d_\text{model}$) & 16 \\
+Heads ($H$) & 1 \\
+MLP width ($d_\text{mlp}$) & 16 \\
+Pre-norm & True \\
+Trainable parameters & 1,794 \\
+\bottomrule
+\end{tabular}
+\caption{Bernoulli-transformer architecture reconstructed from checkpoint and script defaults.}
+\end{table}
+
+\section*{2. Training Details}
+\begin{table}[H]
+\centering
+\begin{tabular}{ll}
+\toprule
+Field & Value \\
+\midrule
+Data generation & $p\sim\mathrm{Beta}(1,1)$, then sequence $y_t\sim\mathrm{Bernoulli}(p)$ \\
+Training objective & Autoregressive cross-entropy on next-token prediction \\
+Sequence length & 1024 \\
+Batch size & 64 \\
+Optimizer & AdamW (weight decay $0.01$) \\
+Learning rate & 0.000300 \\
+Warmup steps & 400 \\
+Gradient clipping & 1.00 \\
+Total steps & 4000 \\
+\bottomrule
+\end{tabular}
+\caption{Training setup from the logged run.}
+\end{table}
+
+\section*{3. Training Curve}
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.70\linewidth]{../artifacts/bernoulli\_transformer\_report/figures/training\_curve.png}
+\caption{Logged training loss over optimization steps.}
+\end{figure}
+
+\section*{4. Final Loss vs Bayes Predictive}
+Held-out evaluation used 130,560 prediction tokens drawn from the same Beta-Bernoulli process.
+\begin{table}[H]
+\centering
+\begin{tabular}{lll}
+\toprule
+Metric & Value & Notes \\
+\midrule
+Model NLL & 0.520968 & Per-token negative log-likelihood \\
+Bayes NLL & 0.516166 & Exact Beta-Bernoulli predictive \\
+Gap & 0.93\% & $(\text{model}-\text{Bayes})/\text{Bayes}$ \\
+\bottomrule
+\end{tabular}
+\caption{Model predictive quality against the Bayes-optimal baseline.}
+\end{table}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.58\linewidth]{../artifacts/bernoulli\_transformer\_report/figures/nll\_vs\_bayes.png}
+\caption{Per-token NLL: trained model vs Bayes optimal predictor.}
+\end{figure}
+
+\section*{5. Posterior-Sample Quality}
+Diagnostics used 30 trials, posterior samples per trial=200, rollout length=1000.
+\begin{table}[H]
+\centering
+\begin{tabular}{lll}
+\toprule
+Metric & Value & Interpretation \\
+\midrule
+$|\log_{10}(\hat p/p)|$ p50 & 0.069 & Multiplicative error in log space \\
+$|\log_{10}(\hat p/p)|$ p90 & 0.184 & Tail log-error \\
+$|\log_{10}(\hat p/p)|$ p95 & 0.204 & Tail log-error \\
+Posterior CV mean & 1.066 & Variability of Rao-Blackwell terms \\
+Posterior CV median & 0.812 & Typical variability \\
+Posterior-mean MSE & 6.798e-05 & Rollout mean vs exact Bayes mean \\
+Posterior-mean correlation & 0.9995 & Rollout mean vs exact Bayes mean \\
+$\log_{10}$ true-vs-est corr & 0.9996 & Alignment in log-probability space \\
+\bottomrule
+\end{tabular}
+\caption{Posterior-sampling diagnostics.}
+\end{table}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.68\linewidth]{../plots/bernoulli\_diag\_true\_vs\_est.png}
+\caption{Diagnostics: \(\log_{10}(\text{true prob})\) vs \(\log_{10}(\text{estimated prob})\).}
+\end{figure}
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.68\linewidth]{../plots/bernoulli\_diag\_posterior\_mean.png}
+\caption{Diagnostics: rollout-derived posterior mean vs exact Bayes posterior mean.}
+\end{figure}
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.68\linewidth]{../plots/bernoulli\_diag\_log10\_ratio\_hist.png}
+\caption{Diagnostics: histogram of \(\log_{10}(\hat p / p)\) estimation error.}
+\end{figure}
+
+\section*{6. LPE Estimation Quality and Naive MC Baseline}
+Equal-compute naive Monte Carlo budget was estimated as:
+\[
+R_{\text{eq}} = \left\lfloor \frac{M\cdot L}{m} \right\rfloor
+= \left\lfloor \frac{200\times1000}{50} \right\rfloor
+= 4000.
+\]
+\begin{table}[H]
+\centering
+\begin{tabular}{llll}
+\toprule
+Statistic & Posterior method $|\text{rel err}|$ & Naive MC expected rel SE & Naive MC $P(\text{zero hits})$ \\
+\midrule
+p50 & 0.160 & 22232.2 & 1.000000 \\
+p90 & 0.352 & 654130.8 & 1.000000 \\
+p95 & 0.508 & 849890.3 & 1.000000 \\
+\bottomrule
+\end{tabular}
+\caption{Posterior estimator error vs expected naive-MC error under matched token budget.}
+\end{table}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.72\linewidth]{../artifacts/bernoulli\_transformer\_report/figures/posterior\_vs\_naive\_percentiles.png}
+\caption{Percentile-level comparison of posterior method error and naive-MC expected error (log scale).}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.72\linewidth]{../artifacts/bernoulli\_transformer\_report/figures/relative\_error\_vs\_true\_prob.png}
+\caption{Per-trial relative error versus true event probability (log-log).}
+\end{figure}
+
+\section*{7. Additional Notes}
+\begin{itemize}
+\item The Bayes gap is small (0.93\%), indicating the transformer is close to Bayes-optimal one-step prediction on this task.
+\item LPE errors are still sensitive to event rarity: even with strong one-step calibration, tiny target probabilities produce heavy-tailed relative error.
+\item Under the same compute budget, naive direct-MC is effectively unusable on these trials (typical zero-hit probability near 1), while posterior sampling remains informative.
+\end{itemize}
+
+\end{document}

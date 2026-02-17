@@ -1,0 +1,60 @@
+[
+  {
+    "k": 5,
+    "device": "cuda",
+    "model_config": {
+      "n_layers": 6,
+      "d_model": 128,
+      "n_heads": 8,
+      "d_mlp": 512
+    },
+    "model_config_label": "L6_D128_H8_M512",
+    "use_positional_encoding": true,
+    "target_mode": "random",
+    "quality_gate_required_gap_pct": 3.0,
+    "quality_gate_passed": false,
+    "rollout_length": 3200,
+    "train_seq_len": 3200,
+    "max_seq_len": 3232,
+    "batch_size": 1,
+    "checkpoint_path": "checkpoints/markov_k456_overnight_overnightD_025644/k5/attempt04_l6d128_s9000/k5/best.pt",
+    "step1_eval_model_nll": 0.658739610477029,
+    "step1_eval_bayes_nll": 0.489562759001066,
+    "step1_gap_pct": 34.556724008411486,
+    "step2_posterior_mae": NaN,
+    "step2_posterior_rmse": NaN,
+    "step3_lpe_rel_error_median_pct": NaN,
+    "step3_lpe_rel_error_mean_pct": NaN,
+    "prediction_plot": "artifacts/markov_k456_overnight_overnightD_025644/k5/attempt04_l6d128_s9000/k5/figures/step1_model_vs_bayes.png",
+    "training_history_csv": "artifacts/markov_k456_overnight_overnightD_025644/k5/attempt04_l6d128_s9000/k5/training_history.csv",
+    "training_curve_plot": "artifacts/markov_k456_overnight_overnightD_025644/k5/attempt04_l6d128_s9000/k5/figures/step1_training_curve.png",
+    "posterior_plot": "",
+    "lpe_hist_plot": "",
+    "posterior_csv": "",
+    "lpe_csv": "",
+    "train_stats": {
+      "final_train_loss": 0.65432063203305,
+      "last_eval_model_nll": 0.6676860688887152,
+      "last_eval_bayes_nll": 0.5269988679822454,
+      "best_gap_ratio": 0.19381580617208644,
+      "best_step": 8500,
+      "steps_run": 9000,
+      "early_stopped": false,
+      "history_csv": "artifacts/markov_k456_overnight_overnightD_025644/k5/attempt04_l6d128_s9000/k5/training_history.csv"
+    },
+    "sweep": {
+      "chosen_config": {
+        "n_layers": 6,
+        "d_model": 128,
+        "n_heads": 8,
+        "d_mlp": 512
+      },
+      "chosen_config_label": "L6_D128_H8_M512",
+      "best_gap": NaN,
+      "results": [],
+      "sweep_log_path": "",
+      "override": true
+    },
+    "timestamp": 1771311079.5428677
+  }
+]

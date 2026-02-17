@@ -1,0 +1,86 @@
+
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{float}
+\title{Markov-$k$ LPE Report (k=1,2,3): Balanced Target, Long Context}
+\author{Automated run}
+\date{\today}
+\begin{document}
+\maketitle
+
+\section*{Setup}
+\begin{itemize}
+\item Context length fixed to 100 for Step 2/3.
+\item Target string mode: \texttt{balanced} (de Bruijn-style state-balanced construction).
+\item Target length: 100.
+\item Posterior samples per estimate: 500.
+\item Rollout length per $k$: $100 \cdot 2^k$.
+\item Transformer checkpoints reused from earlier Step-1 training (no retraining in this rerun).
+\end{itemize}
+
+\section*{Transformer vs True Bayes Predictive}
+\begin{table}[H]
+\centering
+\begin{tabular}{rrrrrrrr}
+\toprule
+$k$ & Model NLL & Bayes NLL & Gap(\%) & Step2 MAE (T) & Step2 MAE (B) & Step3 MedErr\% (T) & Step3 MedErr\% (B) \\
+\midrule
+1 & 0.426468 & 0.423051 & 0.808 & 0.010084 & 0.002434 & 100.000000 & 1.642e+09 \\
+2 & 0.516815 & 0.506216 & 2.094 & 0.090302 & 0.009009 & 100.000000 & 99.999999 \\
+3 & 0.524980 & 0.514922 & 1.953 & 0.074324 & 0.005992 & 99.999994 & 99.999960 \\
+\bottomrule
+\end{tabular}
+\caption{Side-by-side metrics for transformer (T) and true Bayes predictive baseline (B).}
+\end{table}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.72\linewidth]{../artifacts/markov\_k123\_transformer\_500\_ctx100\_balanced/figures\_combined/step2\_transformer\_vs\_bayes.png}
+\caption{Step 2 posterior MAE comparison.}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.72\linewidth]{../artifacts/markov\_k123\_transformer\_500\_ctx100\_balanced/figures\_combined/step3\_transformer\_vs\_bayes.png}
+\caption{Step 3 median relative-error comparison (log scale).}
+\end{figure}
+
+\section*{Training Details (Checkpoint Runs)}
+Transformer hyperparameters per $k$:
+\begin{table}[H]
+\centering
+\begin{tabular}{rrrrrrrr}
+\toprule
+$k$ & Model (L/D/H/M) & Batch & SeqLen & StepsRun & BestStep & BestGap(\%) & FinalTrainLoss \\
+\midrule
+1 & L2/D64/H4/M256 & 64 & 200 & 2000 & 2000 & 0.614 & 0.502749 \\
+2 & L4/D128/H8/M512 & 32 & 400 & 2000 & 2000 & 2.076 & 0.497587 \\
+3 & L6/D128/H8/M512 & 16 & 800 & 3600 & 3600 & 1.746 & 0.501798 \\
+\bottomrule
+\end{tabular}
+\caption{Training summary from Step-1 checkpoint runs used in this report.}
+\end{table}
+
+Optimization process (from training script defaults/recorded setup):
+\begin{itemize}
+\item Optimizer: AdamW, learning rate $3\times10^{-4}$, weight decay $0.01$.
+\item Gradient clipping: $1.0$; gradient accumulation: $1$.
+\item Token-budget-driven steps with early stopping on Bayes-gap target.
+\item Evaluation cadence during training: periodic held-out NLL checks vs Bayes-optimal predictor.
+\item Training sequence length matched rollout length ($100\cdot 2^k$).
+\end{itemize}
+
+\section*{Learning-Curve Note}
+Full per-step learning curves were not persisted in the original checkpoint artifacts.
+Available training progress fields include \texttt{steps\_run}, \texttt{best\_step},
+\texttt{final\_train\_loss}, and final/selected eval metrics.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.72\linewidth]{../artifacts/markov\_k123\_transformer\_500\_ctx100\_balanced/figures\_combined/training\_steps\_summary.png}
+\caption{Training-step summary (available checkpoint metadata; not a full loss curve).}
+\end{figure}
+
+\end{document}

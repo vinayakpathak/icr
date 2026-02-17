@@ -411,7 +411,8 @@ def train_model(
     checkpoint_path: Optional[Path],
     target_gap_ratio: Optional[float] = None,
     min_steps_before_stop: int = 0,
-) -> Dict[str, float]:
+    history_csv_path: Optional[Path] = None,
+) -> Dict[str, object]:
     model = model.to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=0.01)
     grad_accum_steps = max(1, int(grad_accum_steps))
@@ -431,6 +432,7 @@ def train_model(
     best_step = -1
     steps_run = 0
     early_stopped = False
+    history_rows: List[Dict[str, object]] = []
 
     for step in range(num_steps):
         steps_run = step + 1
@@ -488,7 +490,35 @@ def train_model(
                     f"(target <= {100.0*float(target_gap_ratio):.2f}%)",
                     flush=True,
                 )
+                history_rows.append(
+                    {
+                        "step": int(step + 1),
+                        "train_loss": float(step_loss),
+                        "lr": float(lr),
+                        "elapsed_sec": float(time.time() - t0),
+                        "eval_model_nll": float(last_eval_model_nll),
+                        "eval_bayes_nll": float(last_eval_bayes_nll),
+                        "eval_gap_pct": float(100.0 * current_gap),
+                    }
+                )
                 break
+
+        current_gap_pct = float("nan")
+        if not math.isnan(last_eval_model_nll) and not math.isnan(last_eval_bayes_nll):
+            current_gap_pct = float(
+                100.0 * (last_eval_model_nll - last_eval_bayes_nll) / max(last_eval_bayes_nll, 1e-12)
+            )
+        history_rows.append(
+            {
+                "step": int(step + 1),
+                "train_loss": float(step_loss),
+                "lr": float(lr),
+                "elapsed_sec": float(time.time() - t0),
+                "eval_model_nll": float(last_eval_model_nll),
+                "eval_bayes_nll": float(last_eval_bayes_nll),
+                "eval_gap_pct": current_gap_pct,
+            }
+        )
 
         if print_every > 0 and (step + 1) % print_every == 0:
             avg_loss = float(np.mean(recent_losses)) if recent_losses else float("nan")
@@ -509,6 +539,11 @@ def train_model(
         checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
         torch.save(model.state_dict(), checkpoint_path)
 
+    history_csv = ""
+    if history_csv_path is not None:
+        save_csv(history_csv_path, history_rows)
+        history_csv = str(history_csv_path)
+
     return {
         "final_train_loss": float(np.mean(recent_losses)) if recent_losses else float("nan"),
         "last_eval_model_nll": float(last_eval_model_nll),
@@ -517,6 +552,7 @@ def train_model(
         "best_step": int(best_step),
         "steps_run": int(steps_run),
         "early_stopped": bool(early_stopped),
+        "history_csv": history_csv,
     }
 
 
@@ -606,6 +642,66 @@ def plot_prediction_comparison(
     ax.set_ylabel("Model next-bit probability")
     ax.set_title(title)
     ax.grid(alpha=0.25)
+    plt.tight_layout()
+    plt.savefig(out_path, dpi=150)
+    plt.close(fig)
+
+
+def plot_training_history(history_csv_path: Path, out_path: Path, k: int) -> None:
+    if not history_csv_path.exists():
+        return
+
+    with history_csv_path.open("r", encoding="utf-8", newline="") as f:
+        reader = csv.DictReader(f)
+        rows = list(reader)
+    if not rows:
+        return
+
+    steps: List[int] = []
+    train_losses: List[float] = []
+    eval_steps: List[int] = []
+    eval_model_nll: List[float] = []
+    eval_bayes_nll: List[float] = []
+    eval_gap_pct: List[float] = []
+
+    for r in rows:
+        step = int(float(r.get("step", "0") or 0))
+        tl = float(r.get("train_loss", "nan") or "nan")
+        em = float(r.get("eval_model_nll", "nan") or "nan")
+        eb = float(r.get("eval_bayes_nll", "nan") or "nan")
+        eg = float(r.get("eval_gap_pct", "nan") or "nan")
+        steps.append(step)
+        train_losses.append(tl)
+        if math.isfinite(em) and math.isfinite(eb):
+            eval_steps.append(step)
+            eval_model_nll.append(em)
+            eval_bayes_nll.append(eb)
+            eval_gap_pct.append(eg)
+
+    if not steps:
+        return
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig, ax1 = plt.subplots(figsize=(7.5, 4.8))
+    ax1.plot(steps, train_losses, color="tab:blue", linewidth=1.2, label="train loss")
+    if eval_steps:
+        ax1.plot(eval_steps, eval_model_nll, color="tab:orange", linewidth=1.4, label="eval model NLL")
+        ax1.plot(eval_steps, eval_bayes_nll, color="tab:green", linewidth=1.2, label="eval Bayes NLL")
+    ax1.set_xlabel("Training step")
+    ax1.set_ylabel("Loss / NLL")
+    ax1.set_title(f"k={k} learning curve")
+    ax1.grid(alpha=0.25)
+
+    handles1, labels1 = ax1.get_legend_handles_labels()
+    if eval_steps:
+        ax2 = ax1.twinx()
+        ax2.plot(eval_steps, eval_gap_pct, color="tab:red", linestyle="--", linewidth=1.2, label="eval gap (%)")
+        ax2.set_ylabel("Gap (%)")
+        handles2, labels2 = ax2.get_legend_handles_labels()
+        ax1.legend(handles1 + handles2, labels1 + labels2, loc="best")
+    else:
+        ax1.legend(loc="best")
+
     plt.tight_layout()
     plt.savefig(out_path, dpi=150)
     plt.close(fig)
@@ -948,6 +1044,62 @@ def run_arch_sweep(
     }
 
 
+def binary_de_bruijn(order: int) -> List[int]:
+    """Binary de Bruijn cycle B(2, order) as a bit list."""
+    if order <= 0:
+        return [0]
+
+    a = [0] * (2 * order + 1)
+    seq: List[int] = []
+
+    def db(t: int, p: int) -> None:
+        if t > order:
+            if order % p == 0:
+                seq.extend(a[1 : p + 1])
+            return
+        a[t] = a[t - p]
+        db(t + 1, p)
+        for j in range(a[t - p] + 1, 2):
+            a[t] = j
+            db(t + 1, t)
+
+    db(1, 1)
+    return seq
+
+
+def make_target_bits(
+    k: int,
+    target_len: int,
+    mode: str,
+    rng: torch.Generator,
+    device: torch.device,
+) -> torch.Tensor:
+    """Build target bits for LPE."""
+    if target_len <= 0:
+        return torch.empty(0, dtype=torch.long)
+
+    if mode == "random":
+        return (
+            torch.randint(0, 2, (target_len,), generator=rng, device=device, dtype=torch.long)
+            .detach()
+            .cpu()
+            .long()
+        )
+
+    if mode == "balanced":
+        # For k>=1, B(2, k+1) balances 0/1 continuations per k-state over a full cycle.
+        base = binary_de_bruijn(k + 1) if k > 0 else [0, 1]
+        if not base:
+            base = [0, 1]
+        offset = int(torch.randint(0, len(base), (1,), generator=rng, device=device).item())
+        cycle = base[offset:] + base[:offset]
+        reps = (target_len + len(cycle) - 1) // len(cycle)
+        bits = (cycle * reps)[:target_len]
+        return torch.tensor(bits, dtype=torch.long).detach().cpu().long()
+
+    raise ValueError(f"Unknown target mode: {mode}")
+
+
 def generate_contexts_and_target(
     k: int,
     num_contexts: int,
@@ -958,6 +1110,7 @@ def generate_contexts_and_target(
     beta: float,
     device: torch.device,
     seed: int,
+    target_mode: str,
 ) -> Tuple[List[torch.Tensor], torch.Tensor]:
     g = torch.Generator(device=device)
     g.manual_seed(seed)
@@ -968,7 +1121,13 @@ def generate_contexts_and_target(
         seq = sample_markov_k_batch(1, clen, k, alpha=alpha, beta=beta, device=device)[0].detach().cpu().long()
         contexts.append(seq)
 
-    target = torch.randint(0, 2, (target_len,), generator=g, device=device, dtype=torch.long).detach().cpu().long()
+    target = make_target_bits(
+        k=k,
+        target_len=target_len,
+        mode=target_mode,
+        rng=g,
+        device=device,
+    )
     return contexts, target
 
 
@@ -1070,7 +1229,9 @@ def run_single_k(
         print(f"[k={k}] using existing checkpoint: {checkpoint_path}", flush=True)
         should_train = False
 
-    train_stats: Dict[str, float] = {}
+    train_stats: Dict[str, object] = {}
+    history_csv_path = k_dir / "training_history.csv"
+    training_curve_path = fig_dir / "step1_training_curve.png"
     if should_train:
         # Use token budget unless explicit steps were set.
         if args.num_steps is not None:
@@ -1105,9 +1266,13 @@ def run_single_k(
             checkpoint_path=checkpoint_path,
             target_gap_ratio=float(args.target_gap_pct) / 100.0 if args.target_gap_pct is not None else None,
             min_steps_before_stop=int(args.min_steps_before_stop),
+            history_csv_path=history_csv_path,
         )
+        plot_training_history(history_csv_path=history_csv_path, out_path=training_curve_path, k=k)
     else:
         model.load_state_dict(torch.load(checkpoint_path, map_location=device))
+        if history_csv_path.exists():
+            plot_training_history(history_csv_path=history_csv_path, out_path=training_curve_path, k=k)
 
     if checkpoint_path.exists() and should_train:
         model.load_state_dict(torch.load(checkpoint_path, map_location=device))
@@ -1157,6 +1322,7 @@ def run_single_k(
             "model_config": asdict(config),
             "model_config_label": config.label(),
             "use_positional_encoding": bool(args.use_positional_encoding),
+            "target_mode": str(args.target_mode),
             "quality_gate_required_gap_pct": float(args.require_gap_pct) if args.require_gap_pct is not None else None,
             "quality_gate_passed": not gate_failed,
             "rollout_length": rollout_len,
@@ -1172,6 +1338,8 @@ def run_single_k(
             "step3_lpe_rel_error_median_pct": float("nan"),
             "step3_lpe_rel_error_mean_pct": float("nan"),
             "prediction_plot": str(pred_plot_path),
+            "training_history_csv": str(history_csv_path) if history_csv_path.exists() else "",
+            "training_curve_plot": str(training_curve_path) if training_curve_path.exists() else "",
             "posterior_plot": "",
             "lpe_hist_plot": "",
             "posterior_csv": "",
@@ -1196,6 +1364,7 @@ def run_single_k(
             "model_config": asdict(config),
             "model_config_label": config.label(),
             "use_positional_encoding": bool(args.use_positional_encoding),
+            "target_mode": str(args.target_mode),
             "quality_gate_required_gap_pct": float(args.require_gap_pct),
             "quality_gate_passed": False,
             "rollout_length": rollout_len,
@@ -1211,6 +1380,8 @@ def run_single_k(
             "step3_lpe_rel_error_median_pct": float("nan"),
             "step3_lpe_rel_error_mean_pct": float("nan"),
             "prediction_plot": str(pred_plot_path),
+            "training_history_csv": str(history_csv_path) if history_csv_path.exists() else "",
+            "training_curve_plot": str(training_curve_path) if training_curve_path.exists() else "",
             "posterior_plot": "",
             "lpe_hist_plot": "",
             "posterior_csv": "",
@@ -1287,6 +1458,7 @@ def run_single_k(
         beta=float(args.beta),
         device=device,
         seed=int(args.seed) + 999 * k,
+        target_mode=str(args.target_mode),
     )
 
     lpe_rows: List[Dict[str, object]] = []
@@ -1355,6 +1527,7 @@ def run_single_k(
         "model_config": asdict(config),
         "model_config_label": config.label(),
         "use_positional_encoding": bool(args.use_positional_encoding),
+        "target_mode": str(args.target_mode),
         "quality_gate_required_gap_pct": float(args.require_gap_pct) if args.require_gap_pct is not None else None,
         "quality_gate_passed": not gate_failed,
         "rollout_length": rollout_len,
@@ -1370,6 +1543,8 @@ def run_single_k(
         "step3_lpe_rel_error_median_pct": float(np.median(lpe_rel_errors)) if lpe_rel_errors.size else float("nan"),
         "step3_lpe_rel_error_mean_pct": float(np.mean(lpe_rel_errors)) if lpe_rel_errors.size else float("nan"),
         "prediction_plot": str(pred_plot_path),
+        "training_history_csv": str(history_csv_path) if history_csv_path.exists() else "",
+        "training_curve_plot": str(training_curve_path) if training_curve_path.exists() else "",
         "posterior_plot": str(post_plot_path),
         "lpe_hist_plot": str(lpe_hist_path),
         "posterior_csv": str(k_dir / "step2_posterior_state_metrics.csv"),
@@ -1415,10 +1590,16 @@ def write_latex_report(
         k = int(s["k"])
         for key, caption in [
             ("prediction_plot", "Step 1: next-bit prediction vs Bayes"),
+            ("training_curve_plot", "Step 1: learning curve"),
             ("posterior_plot", "Step 2: posterior mean comparison"),
             ("lpe_hist_plot", "Step 3: LPE relative-error histogram"),
         ]:
-            p = Path(str(s[key]))
+            raw_path = str(s.get(key, ""))
+            if not raw_path:
+                continue
+            p = Path(raw_path)
+            if not p.exists():
+                continue
             rel = os.path.relpath(p, out_tex.parent)
             fig_lines.append(
                 "\\begin{figure}[ht]\\centering\\includegraphics[width=0.72\\linewidth]{"
@@ -1540,6 +1721,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--lpe-context-min-len", type=int, default=10)
     p.add_argument("--lpe-context-max-len", type=int, default=20)
     p.add_argument("--lpe-target-len", type=int, default=100)
+    p.add_argument("--target-mode", type=str, choices=["random", "balanced"], default="random")
 
     p.add_argument("--out-dir", type=str, default="artifacts/markov_k")
     p.add_argument("--checkpoint-root", type=str, default="checkpoints/markov_k")
@@ -1593,6 +1775,7 @@ def main() -> None:
                 "k": int(s["k"]),
                 "model_config": str(s["model_config_label"]),
                 "use_positional_encoding": bool(s.get("use_positional_encoding", False)),
+                "target_mode": str(s.get("target_mode", "random")),
                 "quality_gate_passed": bool(s.get("quality_gate_passed", True)),
                 "rollout_length": int(s["rollout_length"]),
                 "train_seq_len": int(s["train_seq_len"]),
@@ -1603,6 +1786,10 @@ def main() -> None:
                 "step1_gap_pct": float(s["step1_gap_pct"]),
                 "step2_posterior_mae": float(s["step2_posterior_mae"]),
                 "step3_lpe_rel_error_median_pct": float(s["step3_lpe_rel_error_median_pct"]),
+                "steps_run": int(s.get("train_stats", {}).get("steps_run", 0)),
+                "best_step": int(s.get("train_stats", {}).get("best_step", -1)),
+                "training_history_csv": str(s.get("training_history_csv", "")),
+                "training_curve_plot": str(s.get("training_curve_plot", "")),
                 "checkpoint_path": str(s["checkpoint_path"]),
             }
         )

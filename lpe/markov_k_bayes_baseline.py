@@ -43,6 +43,60 @@ def _state_from_list(bits: List[int], k: int) -> int:
     return state
 
 
+def binary_de_bruijn(order: int) -> List[int]:
+    """Binary de Bruijn cycle B(2, order) as a bit list."""
+    if order <= 0:
+        return [0]
+
+    a = [0] * (2 * order + 1)
+    seq: List[int] = []
+
+    def db(t: int, p: int) -> None:
+        if t > order:
+            if order % p == 0:
+                seq.extend(a[1 : p + 1])
+            return
+        a[t] = a[t - p]
+        db(t + 1, p)
+        for j in range(a[t - p] + 1, 2):
+            a[t] = j
+            db(t + 1, t)
+
+    db(1, 1)
+    return seq
+
+
+def make_target_bits(
+    k: int,
+    target_len: int,
+    mode: str,
+    rng: torch.Generator,
+) -> torch.Tensor:
+    """Build deterministic target bits for LPE."""
+    if target_len <= 0:
+        return torch.empty(0, dtype=torch.long)
+
+    if mode == "random":
+        return torch.randint(0, 2, (target_len,), generator=rng, dtype=torch.long).detach().cpu().long()
+
+    if mode == "balanced":
+        # For k=0 this is a simple 01 cycle; for k>=1 use B(2, k+1), which
+        # balances 0/1 continuations for each k-state over a full cycle.
+        if k <= 0:
+            base = [0, 1]
+        else:
+            base = binary_de_bruijn(k + 1)
+        if not base:
+            base = [0, 1]
+        offset = int(torch.randint(0, len(base), (1,), generator=rng).item())
+        cycle = base[offset:] + base[:offset]
+        reps = (target_len + len(cycle) - 1) // len(cycle)
+        bits = (cycle * reps)[:target_len]
+        return torch.tensor(bits, dtype=torch.long)
+
+    raise ValueError(f"Unknown target mode: {mode}")
+
+
 def bayes_predictive_rollout(
     context: torch.Tensor,
     k: int,
@@ -140,6 +194,7 @@ def generate_contexts_and_target(
     alpha: float,
     beta: float,
     seed: int,
+    target_mode: str,
 ) -> tuple[list[torch.Tensor], torch.Tensor]:
     """Deterministic context/target generator (matches transformer script intent)."""
     g = torch.Generator(device="cpu")
@@ -158,7 +213,12 @@ def generate_contexts_and_target(
         )[0].detach().cpu().long()
         contexts.append(seq)
 
-    target = torch.randint(0, 2, (target_len,), generator=g, dtype=torch.long).detach().cpu().long()
+    target = make_target_bits(
+        k=k,
+        target_len=target_len,
+        mode=target_mode,
+        rng=g,
+    )
     return contexts, target
 
 
@@ -241,6 +301,7 @@ def run_one_k(k: int, args: argparse.Namespace) -> Dict[str, object]:
         alpha=float(args.alpha),
         beta=float(args.beta),
         seed=int(args.seed) + 999 * k,
+        target_mode=str(args.target_mode),
     )
 
     lpe_rows: List[Dict[str, object]] = []
@@ -307,6 +368,7 @@ def run_one_k(k: int, args: argparse.Namespace) -> Dict[str, object]:
     summary: Dict[str, object] = {
         "k": k,
         "baseline_name": "true_bayes_predictive",
+        "target_mode": str(args.target_mode),
         "rollout_length": rollout_len,
         "num_posterior_samples": int(args.num_posterior_samples),
         "step2_posterior_mae": posterior_mae,
@@ -417,6 +479,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--lpe-context-min-len", type=int, default=10)
     p.add_argument("--lpe-context-max-len", type=int, default=20)
     p.add_argument("--lpe-target-len", type=int, default=100)
+    p.add_argument("--target-mode", type=str, choices=["random", "balanced"], default="random")
     p.add_argument("--out-dir", type=str, default="artifacts/markov_k123_bayes_baseline")
     p.add_argument("--transformer-dir", type=str, default="artifacts/markov_k123_full")
     return p
@@ -447,6 +510,7 @@ def main() -> None:
             {
                 "k": int(s["k"]),
                 "baseline_name": str(s["baseline_name"]),
+                "target_mode": str(s.get("target_mode", "random")),
                 "rollout_length": int(s["rollout_length"]),
                 "num_posterior_samples": int(s["num_posterior_samples"]),
                 "step2_posterior_mae": float(s["step2_posterior_mae"]),
