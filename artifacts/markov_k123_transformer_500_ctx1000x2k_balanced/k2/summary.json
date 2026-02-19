@@ -1,0 +1,49 @@
+{
+  "k": 2,
+  "device": "cuda",
+  "model_config": {
+    "n_layers": 4,
+    "d_model": 128,
+    "n_heads": 8,
+    "d_mlp": 512
+  },
+  "model_config_label": "L4_D128_H8_M512",
+  "use_positional_encoding": true,
+  "target_mode": "balanced",
+  "quality_gate_required_gap_pct": null,
+  "quality_gate_passed": true,
+  "rollout_length": 4000,
+  "train_seq_len": 4000,
+  "max_seq_len": 4032,
+  "batch_size": 16,
+  "checkpoint_path": "checkpoints/markov_k123_ctx1000x2k/k2/best.pt",
+  "step1_eval_model_nll": 0.6771777478060922,
+  "step1_eval_bayes_nll": 0.5097764593147942,
+  "step1_gap_pct": 32.838175524289035,
+  "step2_posterior_mae": 0.14669372818028192,
+  "step2_posterior_rmse": 0.16380316593914893,
+  "step3_lpe_rel_error_median_pct": 1174233.8023902683,
+  "step3_lpe_rel_error_mean_pct": 1.3781915641862534e+34,
+  "prediction_plot": "artifacts/markov_k123_transformer_500_ctx1000x2k_balanced/k2/figures/step1_model_vs_bayes.png",
+  "training_history_csv": "artifacts/markov_k123_transformer_500_ctx1000x2k_balanced/k2/training_history.csv",
+  "training_curve_plot": "artifacts/markov_k123_transformer_500_ctx1000x2k_balanced/k2/figures/step1_training_curve.png",
+  "posterior_plot": "artifacts/markov_k123_transformer_500_ctx1000x2k_balanced/k2/figures/step2_posterior_mean_scatter.png",
+  "lpe_hist_plot": "artifacts/markov_k123_transformer_500_ctx1000x2k_balanced/k2/figures/step3_lpe_rel_error_hist.png",
+  "posterior_csv": "artifacts/markov_k123_transformer_500_ctx1000x2k_balanced/k2/step2_posterior_state_metrics.csv",
+  "lpe_csv": "artifacts/markov_k123_transformer_500_ctx1000x2k_balanced/k2/step3_lpe_metrics.csv",
+  "train_stats": {},
+  "sweep": {
+    "chosen_config": {
+      "n_layers": 4,
+      "d_model": 128,
+      "n_heads": 8,
+      "d_mlp": 512
+    },
+    "chosen_config_label": "L4_D128_H8_M512",
+    "best_gap": NaN,
+    "results": [],
+    "sweep_log_path": "",
+    "override": true
+  },
+  "timestamp": 1771434436.5589523
+}

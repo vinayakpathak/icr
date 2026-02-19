@@ -1,0 +1,10 @@
+N=3000
+all0_n=51
+all1_n=62
+pure_n=113
+pure_frac=0.0376666667
+line_bottom=0.0339020528
+line_top=0.9666846395
+pure_short8=45
+pure_short16=57
+pure_mid_n=42

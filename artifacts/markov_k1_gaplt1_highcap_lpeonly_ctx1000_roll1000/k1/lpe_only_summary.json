@@ -1,0 +1,14 @@
+{
+  "k": 1,
+  "context_length": 1000,
+  "rollout_length": 1000,
+  "num_lpe_contexts": 8,
+  "num_posterior_samples": 200,
+  "target_len": 100,
+  "target_mode": "balanced",
+  "checkpoint_path": "checkpoints/markov_k1_gaplt1_highcap_run2/k1/best.pt",
+  "lpe_csv": "artifacts/markov_k1_gaplt1_highcap_lpeonly_ctx1000_roll1000/k1/step3_lpe_metrics.csv",
+  "lpe_hist_plot": "artifacts/markov_k1_gaplt1_highcap_lpeonly_ctx1000_roll1000/k1/figures/step3_lpe_rel_error_hist.png",
+  "lpe_rel_error_median_pct": 100.0,
+  "lpe_rel_error_mean_pct": 6.516236686324565e+31
+}

@@ -1,0 +1,17 @@
+{
+  "k": 1,
+  "num_contexts": 8,
+  "context_len": 1000,
+  "rollout_len": 1000,
+  "num_posterior_samples": 200,
+  "target_len": 100,
+  "target_mode": "balanced",
+  "checkpoint_path": "checkpoints/markov_k1_gaplt1_highcap_run2/k1/best.pt",
+  "metrics_csv": "artifacts/markov_k1_gaplt1_highcap_lpeonly_ctx1000_roll1000_detailed/k1/step3_lpe_metrics_detailed.csv",
+  "samples_csv": "artifacts/markov_k1_gaplt1_highcap_lpeonly_ctx1000_roll1000_detailed/k1/step3_posterior_samples.csv",
+  "samples_npy": "artifacts/markov_k1_gaplt1_highcap_lpeonly_ctx1000_roll1000_detailed/k1/step3_posterior_samples.npy",
+  "contexts_csv": "artifacts/markov_k1_gaplt1_highcap_lpeonly_ctx1000_roll1000_detailed/k1/step3_contexts.csv",
+  "target_json": "artifacts/markov_k1_gaplt1_highcap_lpeonly_ctx1000_roll1000_detailed/k1/step3_target_info.json",
+  "rel_err_median_pct": 100.0,
+  "rel_err_mean_pct": 8.887257337909343e+46
+}

@@ -1,0 +1,12 @@
+{
+  "timestamp": 1771519126.8892317,
+  "device": "cuda",
+  "k_list": [
+    1
+  ],
+  "suite_csv": "artifacts/markov_k1_gaplt1_highcap_run2/suite_summary.csv",
+  "suite_json": "artifacts/markov_k1_gaplt1_highcap_run2/suite_summary.json",
+  "report_pdf": null,
+  "report_compiled": null,
+  "r2_prefix": null
+}

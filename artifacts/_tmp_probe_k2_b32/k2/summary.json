@@ -1,0 +1,58 @@
+{
+  "k": 2,
+  "device": "cuda",
+  "model_config": {
+    "n_layers": 4,
+    "d_model": 128,
+    "n_heads": 8,
+    "d_mlp": 512
+  },
+  "model_config_label": "L4_D128_H8_M512",
+  "use_positional_encoding": true,
+  "target_mode": "random",
+  "quality_gate_required_gap_pct": null,
+  "quality_gate_passed": true,
+  "rollout_length": 4000,
+  "train_seq_len": 4000,
+  "max_seq_len": 4032,
+  "batch_size": 32,
+  "checkpoint_path": "checkpoints/_tmp_probe_k2_b32/k2/best.pt",
+  "step1_eval_model_nll": 0.47442573534008503,
+  "step1_eval_bayes_nll": 0.3760889830838037,
+  "step1_gap_pct": 26.147203635148504,
+  "step2_posterior_mae": NaN,
+  "step2_posterior_rmse": NaN,
+  "step3_lpe_rel_error_median_pct": NaN,
+  "step3_lpe_rel_error_mean_pct": NaN,
+  "prediction_plot": "artifacts/_tmp_probe_k2_b32/k2/figures/step1_model_vs_bayes.png",
+  "training_history_csv": "artifacts/_tmp_probe_k2_b32/k2/training_history.csv",
+  "training_curve_plot": "artifacts/_tmp_probe_k2_b32/k2/figures/step1_training_curve.png",
+  "posterior_plot": "",
+  "lpe_hist_plot": "",
+  "posterior_csv": "",
+  "lpe_csv": "",
+  "train_stats": {
+    "final_train_loss": 0.6874919533729553,
+    "last_eval_model_nll": 0.7737946449503,
+    "last_eval_bayes_nll": 0.46553572212693634,
+    "best_gap_ratio": 0.6621595468871702,
+    "best_step": 1,
+    "steps_run": 1,
+    "early_stopped": false,
+    "history_csv": "artifacts/_tmp_probe_k2_b32/k2/training_history.csv"
+  },
+  "sweep": {
+    "chosen_config": {
+      "n_layers": 4,
+      "d_model": 128,
+      "n_heads": 8,
+      "d_mlp": 512
+    },
+    "chosen_config_label": "L4_D128_H8_M512",
+    "best_gap": NaN,
+    "results": [],
+    "sweep_log_path": "",
+    "override": true
+  },
+  "timestamp": 1771430899.195903
+}

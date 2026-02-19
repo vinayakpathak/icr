@@ -400,6 +400,9 @@ def train_model(
     grad_accum_steps: int,
     num_steps: int,
     learning_rate: float,
+    weight_decay: float,
+    lr_schedule: str,
+    min_lr: float,
     warmup_steps: int,
     grad_clip: float,
     alpha: float,
@@ -414,15 +417,27 @@ def train_model(
     history_csv_path: Optional[Path] = None,
 ) -> Dict[str, object]:
     model = model.to(device)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=0.01)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
     grad_accum_steps = max(1, int(grad_accum_steps))
 
     def get_lr(step: int) -> float:
         if warmup_steps <= 0:
-            return learning_rate
-        if step < warmup_steps:
+            base_lr = learning_rate
+        elif step < warmup_steps:
             return learning_rate * float(step + 1) / float(warmup_steps)
-        return learning_rate
+        else:
+            base_lr = learning_rate
+        if lr_schedule == "constant":
+            return base_lr
+        if lr_schedule == "cosine":
+            if num_steps <= warmup_steps + 1:
+                return max(min_lr, base_lr)
+            decay_step = max(0, step - warmup_steps)
+            decay_total = max(1, num_steps - warmup_steps - 1)
+            progress = min(1.0, max(0.0, float(decay_step) / float(decay_total)))
+            cosine = 0.5 * (1.0 + math.cos(math.pi * progress))
+            return float(min_lr + (base_lr - min_lr) * cosine)
+        raise ValueError(f"Unsupported lr_schedule={lr_schedule!r}")
 
     t0 = time.time()
     recent_losses: List[float] = []
@@ -436,6 +451,7 @@ def train_model(
 
     for step in range(num_steps):
         steps_run = step + 1
+        eval_ran_this_step = False
         model.train()
         optimizer.zero_grad(set_to_none=True)
         micro_losses: List[float] = []
@@ -460,6 +476,7 @@ def train_model(
             recent_losses.pop(0)
 
         if eval_every > 0 and (step + 1) % eval_every == 0:
+            eval_ran_this_step = True
             eval_stats = evaluate_model_vs_bayes(
                 model=model,
                 k=k,
@@ -499,6 +516,7 @@ def train_model(
                         "eval_model_nll": float(last_eval_model_nll),
                         "eval_bayes_nll": float(last_eval_bayes_nll),
                         "eval_gap_pct": float(100.0 * current_gap),
+                        "eval_fresh": 1,
                     }
                 )
                 break
@@ -517,6 +535,7 @@ def train_model(
                 "eval_model_nll": float(last_eval_model_nll),
                 "eval_bayes_nll": float(last_eval_bayes_nll),
                 "eval_gap_pct": current_gap_pct,
+                "eval_fresh": int(eval_ran_this_step),
             }
         )
 
@@ -663,6 +682,8 @@ def plot_training_history(history_csv_path: Path, out_path: Path, k: int) -> Non
     eval_model_nll: List[float] = []
     eval_bayes_nll: List[float] = []
     eval_gap_pct: List[float] = []
+    has_eval_fresh = bool(rows and ("eval_fresh" in rows[0]))
+    last_eval_pair: Optional[Tuple[float, float]] = None
 
     for r in rows:
         step = int(float(r.get("step", "0") or 0))
@@ -673,10 +694,27 @@ def plot_training_history(history_csv_path: Path, out_path: Path, k: int) -> Non
         steps.append(step)
         train_losses.append(tl)
         if math.isfinite(em) and math.isfinite(eb):
-            eval_steps.append(step)
-            eval_model_nll.append(em)
-            eval_bayes_nll.append(eb)
-            eval_gap_pct.append(eg)
+            is_fresh_eval = False
+            if has_eval_fresh:
+                try:
+                    is_fresh_eval = int(float(r.get("eval_fresh", "0") or 0)) != 0
+                except ValueError:
+                    is_fresh_eval = False
+            else:
+                if last_eval_pair is None:
+                    is_fresh_eval = True
+                else:
+                    is_fresh_eval = not (
+                        math.isclose(em, last_eval_pair[0], rel_tol=0.0, abs_tol=1e-12)
+                        and math.isclose(eb, last_eval_pair[1], rel_tol=0.0, abs_tol=1e-12)
+                    )
+                last_eval_pair = (em, eb)
+
+            if is_fresh_eval:
+                eval_steps.append(step)
+                eval_model_nll.append(em)
+                eval_bayes_nll.append(eb)
+                eval_gap_pct.append(eg)
 
     if not steps:
         return
@@ -715,6 +753,8 @@ def posterior_samples_from_rollouts(
     rollout_length: int,
     device: torch.device,
     rollout_batch_size: int = 1,
+    progress_label: Optional[str] = None,
+    progress_every_batches: int = 0,
 ) -> np.ndarray:
     """Posterior sampling proxy from rollout transition frequencies."""
     model = model.to(device)
@@ -726,6 +766,7 @@ def posterior_samples_from_rollouts(
     with torch.no_grad():
         rollout_batch_size = max(1, int(rollout_batch_size))
         offset = 0
+        batch_idx = 0
         while offset < num_samples:
             bsz = min(rollout_batch_size, num_samples - offset)
             generated_batch = rollout_with_cache_batch(
@@ -755,6 +796,10 @@ def posterior_samples_from_rollouts(
                 row = np.where(denom > 0.0, ones / np.maximum(denom, 1e-12), 0.5)
                 samples[offset + j] = row
             offset += bsz
+            batch_idx += 1
+            if progress_label is not None and progress_every_batches > 0:
+                if (batch_idx % progress_every_batches == 0) or (offset >= num_samples):
+                    print(f"{progress_label}: posterior samples {offset}/{num_samples}", flush=True)
 
     return samples
 
@@ -959,6 +1004,7 @@ def run_arch_sweep(
     batch_size: int,
     grad_accum_steps: int,
     learning_rate: float,
+    weight_decay: float,
     warmup_steps: int,
     grad_clip: float,
     alpha: float,
@@ -990,6 +1036,9 @@ def run_arch_sweep(
                 grad_accum_steps=grad_accum_steps,
                 num_steps=sweep_steps,
                 learning_rate=learning_rate,
+                weight_decay=weight_decay,
+                lr_schedule="constant",
+                min_lr=0.0,
                 warmup_steps=sweep_warmup,
                 grad_clip=grad_clip,
                 alpha=alpha,
@@ -1195,6 +1244,7 @@ def run_single_k(
             batch_size=batch_size,
             grad_accum_steps=int(args.grad_accum_steps),
             learning_rate=float(args.learning_rate),
+            weight_decay=float(args.weight_decay),
             warmup_steps=int(args.warmup_steps),
             grad_clip=float(args.grad_clip),
             alpha=float(args.alpha),
@@ -1223,6 +1273,13 @@ def run_single_k(
         max_seq_len=max_seq_len,
         use_positional_encoding=bool(args.use_positional_encoding),
     )
+    init_checkpoint_path: Optional[Path] = None
+    if args.init_checkpoint is not None:
+        init_checkpoint_path = Path(str(args.init_checkpoint))
+        if not init_checkpoint_path.exists():
+            raise FileNotFoundError(f"--init-checkpoint not found: {init_checkpoint_path}")
+        model.load_state_dict(torch.load(init_checkpoint_path, map_location=device))
+        print(f"[k={k}] initialized model from checkpoint: {init_checkpoint_path}", flush=True)
 
     should_train = True
     if args.skip_existing and checkpoint_path.exists():
@@ -1255,6 +1312,9 @@ def run_single_k(
             grad_accum_steps=int(args.grad_accum_steps),
             num_steps=num_steps,
             learning_rate=float(args.learning_rate),
+            weight_decay=float(args.weight_decay),
+            lr_schedule=str(args.lr_schedule),
+            min_lr=float(args.min_lr),
             warmup_steps=effective_warmup_steps,
             grad_clip=float(args.grad_clip),
             alpha=float(args.alpha),
@@ -1328,6 +1388,7 @@ def run_single_k(
             "rollout_length": rollout_len,
             "train_seq_len": train_seq_len,
             "max_seq_len": max_seq_len,
+            "num_posterior_samples": int(args.num_posterior_samples),
             "batch_size": batch_size,
             "checkpoint_path": str(checkpoint_path),
             "step1_eval_model_nll": float(eval_stats["model_nll"]),
@@ -1370,6 +1431,7 @@ def run_single_k(
             "rollout_length": rollout_len,
             "train_seq_len": train_seq_len,
             "max_seq_len": max_seq_len,
+            "num_posterior_samples": int(args.num_posterior_samples),
             "batch_size": batch_size,
             "checkpoint_path": str(checkpoint_path),
             "step1_eval_model_nll": float(eval_stats["model_nll"]),
@@ -1403,14 +1465,18 @@ def run_single_k(
         device=device,
     )[0].detach().cpu().long()
 
+    step2_num_samples = int(args.num_posterior_samples)
+    step2_progress_every = max(1, int(math.ceil(step2_num_samples / max(1, int(args.posterior_rollout_batch_size)) / 5.0)))
     posterior_samples = posterior_samples_from_rollouts(
         model=model,
         context=context_for_posterior,
         k=k,
-        num_samples=int(args.num_posterior_samples),
+        num_samples=step2_num_samples,
         rollout_length=rollout_len,
         device=device,
         rollout_batch_size=int(args.posterior_rollout_batch_size),
+        progress_label=f"[k={k}] step2",
+        progress_every_batches=step2_progress_every,
     )
 
     alpha_post, beta_post = compute_posterior_params(
@@ -1463,14 +1529,22 @@ def run_single_k(
 
     lpe_rows: List[Dict[str, object]] = []
     for i, context in enumerate(contexts):
+        print(f"[k={k}] Step 3 context {i + 1}/{len(contexts)} (context_len={int(context.numel())})", flush=True)
+        step3_num_samples = int(args.num_posterior_samples)
+        step3_progress_every = max(
+            1,
+            int(math.ceil(step3_num_samples / max(1, int(args.posterior_rollout_batch_size)) / 5.0)),
+        )
         samples = posterior_samples_from_rollouts(
             model=model,
             context=context,
             k=k,
-            num_samples=int(args.num_posterior_samples),
+            num_samples=step3_num_samples,
             rollout_length=rollout_len,
             device=device,
             rollout_batch_size=int(args.posterior_rollout_batch_size),
+            progress_label=f"[k={k}] step3 ctx {i + 1}/{len(contexts)}",
+            progress_every_batches=step3_progress_every,
         )
 
         sample_logps = []
@@ -1533,6 +1607,7 @@ def run_single_k(
         "rollout_length": rollout_len,
         "train_seq_len": train_seq_len,
         "max_seq_len": max_seq_len,
+        "num_posterior_samples": int(args.num_posterior_samples),
         "batch_size": batch_size,
         "checkpoint_path": str(checkpoint_path),
         "step1_eval_model_nll": float(eval_stats["model_nll"]),
@@ -1682,6 +1757,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     p.add_argument("--batch-size", type=int, default=None)
     p.add_argument("--grad-accum-steps", type=int, default=1)
+    p.add_argument(
+        "--init-checkpoint",
+        type=str,
+        default=None,
+        help="Optional checkpoint to load before training/evaluation (useful for fine-tuning).",
+    )
     p.add_argument("--n-layers", type=int, default=None, help="Override model layers (disables sweep).")
     p.add_argument("--d-model", type=int, default=None, help="Override model width (disables sweep).")
     p.add_argument("--n-heads", type=int, default=None, help="Override model attention heads.")
@@ -1689,6 +1770,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--num-steps", type=int, default=None)
     p.add_argument("--target-train-tokens", type=float, default=2e7)
     p.add_argument("--learning-rate", type=float, default=3e-4)
+    p.add_argument("--weight-decay", type=float, default=0.01)
+    p.add_argument("--lr-schedule", type=str, choices=["constant", "cosine"], default="constant")
+    p.add_argument("--min-lr", type=float, default=0.0, help="Final LR floor for cosine schedule.")
     p.add_argument("--warmup-steps", type=int, default=2000)
     p.add_argument(
         "--target-gap-pct",

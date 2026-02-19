@@ -1,0 +1,9 @@
+{
+  "timestamp": 1771437392.0925348,
+  "k_list": [
+    3
+  ],
+  "suite_csv": "artifacts/markov_k123_bayes_baseline_ctx1000x2k_balanced/suite_summary.csv",
+  "suite_json": "artifacts/markov_k123_bayes_baseline_ctx1000x2k_balanced/suite_summary.json",
+  "transformer_dir": "artifacts/markov_k123_transformer_500_ctx1000x2k_balanced"
+}

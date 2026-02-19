@@ -218,47 +218,58 @@ class BernoulliTransformer(nn.Module):
         the requested length is reached (subject to memory constraints).
         """
         self.eval()
-        with torch.no_grad():
-            prefix_len = len(prefix)
-            
-            # If max_seq_len is set, limit the rollout length
-            if self.max_seq_len is not None:
-                max_allowed_length = self.max_seq_len - prefix_len
-                
-                if max_allowed_length <= 0:
-                    # Prefix is already at or exceeds max_seq_len, cannot generate any tokens
-                    warnings.warn(
-                        f"Prefix length {prefix_len} exceeds or equals max_seq_len={self.max_seq_len}. "
-                        f"Cannot generate any tokens.",
-                        UserWarning
-                    )
-                    return torch.tensor([], dtype=prefix.dtype, device=prefix.device)
-                
-                actual_length = min(length, max_allowed_length)
-                if actual_length < length:
-                    warnings.warn(
-                        f"Requested rollout length {length} exceeds maximum allowed {max_allowed_length} "
-                        f"(prefix length: {prefix_len}, max_seq_len: {self.max_seq_len}). "
-                        f"Reducing to {actual_length}.",
-                        UserWarning
-                    )
-            else:
-                # No limit set, use requested length
-                actual_length = length
-            
-            current = prefix.clone()
-            generated = []
-            
-            for _ in range(actual_length):
-                next_token = self.sample(current, temperature=temperature)
-                if isinstance(next_token, (int, float)):
-                    next_token_val = int(next_token)
+
+        # Keep legacy behavior for set-attention mode (no autoregressive cache path).
+        if self.attention_mode != "causal":
+            with torch.no_grad():
+                prefix_len = len(prefix)
+                if self.max_seq_len is not None:
+                    max_allowed_length = self.max_seq_len - prefix_len
+                    if max_allowed_length <= 0:
+                        warnings.warn(
+                            f"Prefix length {prefix_len} exceeds or equals max_seq_len={self.max_seq_len}. "
+                            f"Cannot generate any tokens.",
+                            UserWarning,
+                        )
+                        return torch.tensor([], dtype=prefix.dtype, device=prefix.device)
+                    actual_length = min(length, max_allowed_length)
+                    if actual_length < length:
+                        warnings.warn(
+                            f"Requested rollout length {length} exceeds maximum allowed {max_allowed_length} "
+                            f"(prefix length: {prefix_len}, max_seq_len: {self.max_seq_len}). "
+                            f"Reducing to {actual_length}.",
+                            UserWarning,
+                        )
                 else:
-                    next_token_val = next_token.item()
-                generated.append(next_token_val)
-                current = torch.cat([current, torch.tensor([next_token_val], dtype=current.dtype, device=current.device)])
-            
-            return torch.tensor(generated, dtype=current.dtype, device=current.device)
+                    actual_length = length
+
+                current = prefix.clone()
+                generated: List[int] = []
+                for _ in range(actual_length):
+                    next_token = self.sample(current, temperature=temperature)
+                    if isinstance(next_token, (int, float)):
+                        next_token_val = int(next_token)
+                    else:
+                        next_token_val = int(next_token.item())
+                    generated.append(next_token_val)
+                    current = torch.cat(
+                        [current, torch.tensor([next_token_val], dtype=current.dtype, device=current.device)]
+                    )
+                return torch.tensor(generated, dtype=current.dtype, device=current.device)
+
+        # Causal mode: use incremental KV-cached decode by default.
+        try:
+            from lpe.markov_k_transformer import rollout_with_cache  # type: ignore
+        except ImportError:
+            from markov_k_transformer import rollout_with_cache  # type: ignore
+
+        with torch.no_grad():
+            return rollout_with_cache(
+                self,
+                prefix=prefix,
+                length=length,
+                temperature=temperature,
+            )
 
 
 # =====================
@@ -956,6 +967,7 @@ def estimate_posterior_sampling_method_fast(
     target_string: torch.Tensor,
     num_samples: int = 100,
     rollout_length: int = 1000,
+    rollout_batch_size: int = 32,
     device: str = "cuda" if torch.cuda.is_available() else "cpu",
 ) -> Tuple[float, float, float, float, float]:
     """
@@ -967,22 +979,40 @@ def estimate_posterior_sampling_method_fast(
     model.eval()
     context = context.to(device)
     target_string = target_string.to(device)
-    
-    f_values = []
-    p_samples = []
-    
+
+    rollout_batch_size = max(1, int(rollout_batch_size))
+
+    # Prefer cached batched rollouts for diagnostics speed; fall back to legacy rollout if unavailable.
+    try:
+        from lpe.markov_k_transformer import rollout_with_cache_batch  # type: ignore
+    except ImportError:
+        from markov_k_transformer import rollout_with_cache_batch  # type: ignore
+
+    p_samples_chunks: List[np.ndarray] = []
     with torch.no_grad():
-        for _ in range(num_samples):
-            rollout = model.rollout(context, length=rollout_length, temperature=1.0)
-            if rollout.numel() == 0:
-                p_hat = 0.5
+        for offset in range(0, num_samples, rollout_batch_size):
+            bsz = min(rollout_batch_size, num_samples - offset)
+            rollout_batch = rollout_with_cache_batch(
+                model,
+                prefix=context.long(),
+                length=rollout_length,
+                batch_size=bsz,
+                temperature=1.0,
+            )
+            if rollout_batch.numel() == 0:
+                p_chunk = np.full((bsz,), 0.5, dtype=np.float64)
             else:
-                p_hat = rollout.float().mean().item()
-            p_samples.append(p_hat)
-            f_values.append(compute_string_probability_given_p(target_string, p_hat))
-    
-    f_values = np.array(f_values, dtype=np.float64)
-    p_samples = np.array(p_samples, dtype=np.float64)
+                p_chunk = rollout_batch.float().mean(dim=1).detach().cpu().numpy().astype(np.float64)
+            p_samples_chunks.append(p_chunk)
+
+    if p_samples_chunks:
+        p_samples = np.concatenate(p_samples_chunks, axis=0)
+    else:
+        p_samples = np.zeros((0,), dtype=np.float64)
+
+    k_ones = int(target_string.sum().item())
+    target_len = int(target_string.numel())
+    f_values = np.power(p_samples, k_ones) * np.power(1.0 - p_samples, target_len - k_ones)
     
     estimate = float(f_values.mean()) if f_values.size else 0.0
     f_std = float(f_values.std(ddof=1)) if f_values.size > 1 else 0.0
@@ -999,24 +1029,43 @@ def estimate_posterior_mean_from_rollouts(
     context: torch.Tensor,
     num_rollouts: int = 200,
     rollout_length: int = 100,
+    rollout_batch_size: int = 32,
     device: str = "cuda" if torch.cuda.is_available() else "cpu",
 ) -> Tuple[float, float]:
     """Estimate posterior mean p using rollouts; returns (mean, std)."""
     model = model.to(device)
     model.eval()
     context = context.to(device)
-    
-    p_hats = []
+
+    rollout_batch_size = max(1, int(rollout_batch_size))
+
+    try:
+        from lpe.markov_k_transformer import rollout_with_cache_batch  # type: ignore
+    except ImportError:
+        from markov_k_transformer import rollout_with_cache_batch  # type: ignore
+
+    p_hats_chunks: List[np.ndarray] = []
     with torch.no_grad():
-        for _ in range(num_rollouts):
-            rollout = model.rollout(context, length=rollout_length, temperature=1.0)
-            if rollout.numel() == 0:
-                p_hat = 0.5
+        for offset in range(0, num_rollouts, rollout_batch_size):
+            bsz = min(rollout_batch_size, num_rollouts - offset)
+            rollout_batch = rollout_with_cache_batch(
+                model,
+                prefix=context.long(),
+                length=rollout_length,
+                batch_size=bsz,
+                temperature=1.0,
+            )
+            if rollout_batch.numel() == 0:
+                p_chunk = np.full((bsz,), 0.5, dtype=np.float64)
             else:
-                p_hat = rollout.float().mean().item()
-            p_hats.append(p_hat)
-    
-    p_hats = np.array(p_hats, dtype=np.float64)
+                p_chunk = rollout_batch.float().mean(dim=1).detach().cpu().numpy().astype(np.float64)
+            p_hats_chunks.append(p_chunk)
+
+    if p_hats_chunks:
+        p_hats = np.concatenate(p_hats_chunks, axis=0)
+    else:
+        p_hats = np.zeros((0,), dtype=np.float64)
+
     p_mean = float(p_hats.mean()) if p_hats.size else 0.0
     p_std = float(p_hats.std(ddof=1)) if p_hats.size > 1 else 0.0
     return p_mean, p_std
@@ -1060,9 +1109,12 @@ def run_diagnostics(
     target_length: int = 50,
     num_posterior_samples: int = 100,
     rollout_length_for_posterior: int = 1000,
+    posterior_rollout_batch_size: int = 32,
     num_p_rollouts: int = 200,
     p_rollout_length: int = 100,
+    p_rollout_batch_size: int = 32,
     target_mode: str = "bernoulli",
+    p_source: str = "uniform_range",
     p_min: float = 0.05,
     p_max: float = 0.95,
     seed: int = 123,
@@ -1134,9 +1186,15 @@ def run_diagnostics(
         f"Trials={num_trials} | context_len={context_length} | target_len={target_length} | "
         f"posterior_samples={num_posterior_samples} | rollout_len={rollout_length_for_posterior}"
     )
+    if p_source == "beta11":
+        p_desc = "Beta(1,1)"
+    else:
+        p_desc = f"Uniform({p_min}, {p_max})"
     print(
         f"p_rollouts={num_p_rollouts} (len={p_rollout_length}) | "
-        f"target_mode={target_mode} | p_range=[{p_min}, {p_max}]"
+        f"target_mode={target_mode} | p_source={p_desc} | "
+        f"posterior_rollout_batch_size={posterior_rollout_batch_size} | "
+        f"p_rollout_batch_size={p_rollout_batch_size}"
     )
     
     rng = np.random.default_rng(seed)
@@ -1145,7 +1203,10 @@ def run_diagnostics(
     eps = 1e-300
     
     for trial in range(num_trials):
-        true_p = float(rng.uniform(p_min, p_max))
+        if p_source == "beta11":
+            true_p = float(rng.beta(1.0, 1.0))
+        else:
+            true_p = float(rng.uniform(p_min, p_max))
         context = (torch.rand(context_length, device=device) < true_p).long()
         target = _make_target_string(rng, target_length, target_mode, true_p, device)
         
@@ -1159,6 +1220,7 @@ def run_diagnostics(
             target_string=target,
             num_samples=num_posterior_samples,
             rollout_length=rollout_length_for_posterior,
+            rollout_batch_size=posterior_rollout_batch_size,
             device=device,
         )
 
@@ -1180,6 +1242,7 @@ def run_diagnostics(
             context=context,
             num_rollouts=num_p_rollouts,
             rollout_length=p_rollout_length,
+            rollout_batch_size=p_rollout_batch_size,
             device=device,
         )
         
@@ -1628,10 +1691,29 @@ if __name__ == "__main__":
     parser.add_argument("--diagnostics", action="store_true", help="Run multi-trial diagnostics")
     parser.add_argument("--num-trials", type=int, default=50, help="Number of diagnostic trials")
     parser.add_argument("--target-mode", type=str, default="bernoulli", choices=["bernoulli", "balanced", "alternating", "uniform"], help="Target string mode")
+    parser.add_argument(
+        "--p-source",
+        type=str,
+        default="uniform_range",
+        choices=["uniform_range", "beta11"],
+        help="How to sample latent Bernoulli p for each diagnostic context",
+    )
     parser.add_argument("--p-min", type=float, default=0.05, help="Minimum true p")
     parser.add_argument("--p-max", type=float, default=0.95, help="Maximum true p")
+    parser.add_argument(
+        "--posterior-rollout-batch-size",
+        type=int,
+        default=32,
+        help="Batch size for cached rollouts in posterior-sampling estimator",
+    )
     parser.add_argument("--num-p-rollouts", type=int, default=200, help="Number of rollouts for posterior mean p")
     parser.add_argument("--p-rollout-length", type=int, default=100, help="Rollout length for posterior mean p")
+    parser.add_argument(
+        "--p-rollout-batch-size",
+        type=int,
+        default=32,
+        help="Batch size for cached rollouts in posterior-mean estimator",
+    )
     parser.add_argument("--seed", type=int, default=123, help="Random seed for diagnostics")
     parser.add_argument("--plot-dir", type=str, default="plots", help="Directory for diagnostic plots")
     parser.add_argument(
@@ -1675,9 +1757,12 @@ if __name__ == "__main__":
             target_length=args.target_length,
             num_posterior_samples=args.num_posterior_samples,
             rollout_length_for_posterior=args.rollout_length,
+            posterior_rollout_batch_size=args.posterior_rollout_batch_size,
             num_p_rollouts=args.num_p_rollouts,
             p_rollout_length=args.p_rollout_length,
+            p_rollout_batch_size=args.p_rollout_batch_size,
             target_mode=args.target_mode,
+            p_source=args.p_source,
             p_min=args.p_min,
             p_max=args.p_max,
             seed=args.seed,

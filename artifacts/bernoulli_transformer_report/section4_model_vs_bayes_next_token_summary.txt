@@ -1,0 +1,6 @@
+num_contexts=3000
+length_min=1
+length_max=256
+seed=20260217
+pearson_corr=0.9958053829
+mae=0.0095425630

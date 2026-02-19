@@ -1,0 +1,52 @@
+[
+  {
+    "k": 1,
+    "device": "cuda",
+    "model_config": {
+      "n_layers": 2,
+      "d_model": 64,
+      "n_heads": 4,
+      "d_mlp": 256
+    },
+    "model_config_label": "L2_D64_H4_M256",
+    "use_positional_encoding": true,
+    "target_mode": "balanced",
+    "quality_gate_required_gap_pct": null,
+    "quality_gate_passed": true,
+    "rollout_length": 2000,
+    "train_seq_len": 2000,
+    "max_seq_len": 2032,
+    "num_posterior_samples": 200,
+    "batch_size": 64,
+    "checkpoint_path": "checkpoints/markov_k1_gaplt1_finetune/k1/best.pt",
+    "step1_eval_model_nll": 0.4939211007653027,
+    "step1_eval_bayes_nll": 0.485934975661778,
+    "step1_gap_pct": 1.643455504030899,
+    "step2_posterior_mae": NaN,
+    "step2_posterior_rmse": NaN,
+    "step3_lpe_rel_error_median_pct": NaN,
+    "step3_lpe_rel_error_mean_pct": NaN,
+    "prediction_plot": "artifacts/markov_k1_gaplt1_finetune_eval/k1/figures/step1_model_vs_bayes.png",
+    "training_history_csv": "",
+    "training_curve_plot": "",
+    "posterior_plot": "",
+    "lpe_hist_plot": "",
+    "posterior_csv": "",
+    "lpe_csv": "",
+    "train_stats": {},
+    "sweep": {
+      "chosen_config": {
+        "n_layers": 2,
+        "d_model": 64,
+        "n_heads": 4,
+        "d_mlp": 256
+      },
+      "chosen_config_label": "L2_D64_H4_M256",
+      "best_gap": NaN,
+      "results": [],
+      "sweep_log_path": "",
+      "override": true
+    },
+    "timestamp": 1771460485.3814366
+  }
+]

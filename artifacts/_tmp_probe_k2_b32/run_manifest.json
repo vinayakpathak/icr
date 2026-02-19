@@ -1,0 +1,12 @@
+{
+  "timestamp": 1771430899.1966326,
+  "device": "cuda",
+  "k_list": [
+    2
+  ],
+  "suite_csv": "artifacts/_tmp_probe_k2_b32/suite_summary.csv",
+  "suite_json": "artifacts/_tmp_probe_k2_b32/suite_summary.json",
+  "report_pdf": null,
+  "report_compiled": null,
+  "r2_prefix": null
+}

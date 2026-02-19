@@ -146,6 +146,8 @@ def posterior_samples_from_bayes_rollouts(
     alpha: float,
     beta: float,
     seed: int,
+    progress_label: str | None = None,
+    progress_every: int = 0,
 ) -> np.ndarray:
     """Estimate posterior samples via rollout transition frequencies (baseline oracle)."""
     num_states = 1 << k
@@ -181,6 +183,9 @@ def posterior_samples_from_bayes_rollouts(
 
         denom = ones + zeros
         samples[i] = np.where(denom > 0.0, ones / np.maximum(denom, 1e-12), 0.5)
+        if progress_label is not None and progress_every > 0:
+            if ((i + 1) % progress_every == 0) or (i + 1 == num_samples):
+                print(f"{progress_label}: posterior samples {i + 1}/{num_samples}", flush=True)
 
     return samples
 
@@ -251,6 +256,8 @@ def run_one_k(k: int, args: argparse.Namespace) -> Dict[str, object]:
         alpha=float(args.alpha),
         beta=float(args.beta),
         seed=int(args.seed) + 10000 * k + 1,
+        progress_label=f"[k={k}] step2",
+        progress_every=max(1, int(math.ceil(int(args.num_posterior_samples) / 5.0))),
     )
 
     alpha_post, beta_post = compute_posterior_params(
@@ -306,6 +313,7 @@ def run_one_k(k: int, args: argparse.Namespace) -> Dict[str, object]:
 
     lpe_rows: List[Dict[str, object]] = []
     for i, context in enumerate(contexts):
+        print(f"[k={k}] Step 3 context {i + 1}/{len(contexts)} (context_len={int(context.numel())})", flush=True)
         samples = posterior_samples_from_bayes_rollouts(
             context=context,
             k=k,
@@ -314,6 +322,8 @@ def run_one_k(k: int, args: argparse.Namespace) -> Dict[str, object]:
             alpha=float(args.alpha),
             beta=float(args.beta),
             seed=int(args.seed) + 20000 * k + i,
+            progress_label=f"[k={k}] step3 ctx {i + 1}/{len(contexts)}",
+            progress_every=max(1, int(math.ceil(int(args.num_posterior_samples) / 5.0))),
         )
 
         sample_logps = []
