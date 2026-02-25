@@ -1,0 +1,5 @@
+n_contexts=200
+len_min=64
+len_max=4095
+pearson=0.993257
+mae=0.024378

@@ -1,0 +1,12 @@
+{
+  "timestamp": 1771568775.8083272,
+  "device": "cuda",
+  "k_list": [
+    2
+  ],
+  "suite_csv": "/root/icr/artifacts/markov_k2_overnight_20260220_034625/attempt_01_a01_l8d256_seed123_scout/suite_summary.csv",
+  "suite_json": "/root/icr/artifacts/markov_k2_overnight_20260220_034625/attempt_01_a01_l8d256_seed123_scout/suite_summary.json",
+  "report_pdf": null,
+  "report_compiled": null,
+  "r2_prefix": null
+}

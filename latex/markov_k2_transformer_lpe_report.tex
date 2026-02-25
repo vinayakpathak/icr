@@ -1,0 +1,284 @@
+
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{float}
+\usepackage{amsmath}
+\title{Markov-$k$ Transformer LPE Report (k=2)}
+\author{Automated run}
+\date{\today}
+\begin{document}
+\maketitle
+
+\section*{Artifacts Used}
+\begin{itemize}
+\item Transformer artifacts: \texttt{artifacts/markov\_k2\_overnight\_20260220\_034625/attempt\_01\_a01\_l8d256\_seed123\_scout}
+\item Report figures and diagnostics: \texttt{artifacts/markov\_k2\_gaplt1\_report/figures} and \texttt{artifacts/markov\_k2\_gaplt1\_lpeonly\_ctx1000\_roll1000\_detailed/figures}
+\end{itemize}
+
+\section*{1. Model Architecture}
+\begin{table}[H]
+\centering
+\begin{tabular}{ll}
+\toprule
+Field & Value \\
+\midrule
+Transformer type & Decoder-only, causal self-attention \\
+Positional encoding & Learned absolute positional embeddings \\
+Markov order & $k=2$ \\
+Layers ($L$) & 8 \\
+Model width ($d_\text{model}$) & 256 \\
+Heads ($H$) & 8 \\
+MLP width ($d_\text{mlp}$) & 1024 \\
+Pre-norm & True \\
+Trainable parameters & 7,368,194 \\
+\bottomrule
+\end{tabular}
+\caption{k=2 transformer architecture used for this report.}
+\end{table}
+
+\section*{2. Training Details}
+\begin{table}[H]
+\centering
+\begin{tabular}{ll}
+\toprule
+Field & Value \\
+\midrule
+Training objective & Autoregressive cross-entropy on next-token prediction \\
+Sequence length & 4000 \\
+Batch size & 8 \\
+Gradient accumulation & 8 \\
+Optimizer & AdamW \\
+Learning rate & $2.50\times 10^{-4}$ (cosine decay to $2.00\times 10^{-6}$) \\
+Weight decay & 0.001 \\
+Warmup schedule & Linear warmup for 500 steps \\
+Gradient clipping & 0.8 \\
+Total steps run & 2300 (early-stop target reached) \\
+Early-stop target & Step-1 gap $\le 0.95\%$ \\
+\bottomrule
+\end{tabular}
+\caption{Training setup for the high-capacity k=2 run.}
+\end{table}
+
+Data generation process (explicit Markov parameterization):
+\begin{itemize}
+\item General $k$-Markov parameterization:
+\[
+\theta_s \equiv P(x_t=1\mid x_{t-k:t-1}=s),\qquad s\in\{0,1\}^k.
+\]
+\item Prior over parameters: independent Beta per state
+\[
+\theta_s \sim \mathrm{Beta}(1,1)\;\;\text{independently for all }s\in\{0,1\}^k.
+\]
+\item Sequence generation for one training example of length $T=4000$:
+\[
+x_1,\dots,x_k \overset{\text{i.i.d.}}{\sim}\mathrm{Bernoulli}(0.5),
+\]
+\[
+x_t\mid x_{t-k:t-1}\sim \mathrm{Bernoulli}\!\left(\theta_{x_{t-k:t-1}}\right),\qquad t\ge k+1.
+\]
+\item For this report ($k=2$), the latent parameters are
+\[
+\theta_{00},\theta_{01},\theta_{10},\theta_{11}\overset{\text{i.i.d.}}{\sim}\mathrm{Beta}(1,1),
+\]
+with
+\[
+P(x_t=1\mid x_{t-2:t-1}=ab)=\theta_{ab},\qquad ab\in\{00,01,10,11\}.
+\]
+\end{itemize}
+
+\section*{3. Training Curve}
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.72\linewidth]{../artifacts/markov\_k2\_overnight\_20260220\_034625/attempt\_01\_a01\_l8d256\_seed123\_scout/k2/figures/step1\_training\_curve.png}
+\caption{Training curve for k=2. Training loss is logged every gradient step. Evaluation curves are drawn only at true eval checkpoints and linearly connected between checkpoints.}
+\end{figure}
+
+\section*{4. Final Loss vs Bayes Predictive}
+Held-out evaluation uses sequences from the same Beta-Bernoulli Markov-2 process.
+
+For a prefix $x_{1:t-1}$ and current state $s_t\in\{00,01,10,11\}$, with transition counts
+$n_{s,0}, n_{s,1}$, the Bayes predictive is
+\[
+P(x_t=1\mid x_{1:t-1})=\frac{1+n_{s_t,1}}{2+n_{s_t,0}+n_{s_t,1}}.
+\]
+The per-token Bayes NLL is
+\[
+\ell_t^{\text{Bayes}} = -\big[x_t\log q_t + (1-x_t)\log(1-q_t)\big],
+\]
+where $q_t=P(x_t=1\mid x_{1:t-1})$.
+
+\begin{table}[H]
+\centering
+\begin{tabular}{lll}
+\toprule
+Metric & Value & Notes \\
+\midrule
+Model NLL & 0.505525 & Per-token negative log-likelihood \\
+Bayes NLL & 0.501614 & Exact Bayes predictive on held-out samples \\
+Gap & 0.78\% & $(\text{model}-\text{Bayes})/\text{Bayes}$ \\
+\bottomrule
+\end{tabular}
+\caption{Model predictive quality against Bayes baseline (k=2).}
+\end{table}
+
+To compare next-token probabilities directly, we generated 200 mixed-length contexts:
+\begin{itemize}
+\item Sample context length uniformly from $[64,4095]$.
+\item Sample one latent Markov-2 process from the priors above and draw context bits.
+\item Compute Bayes and model $P(x_{n+1}=1\mid x_{1:n})$.
+\end{itemize}
+Summary: Pearson $r=0.9933$, MAE $=0.02438$.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.72\linewidth]{../artifacts/markov\_k2\_gaplt1\_report/figures/section4\_k2\_nextprob\_scatter\_varlen.png}
+\caption{Model vs Bayes next-token probability on mixed-length contexts for k=2.}
+\end{figure}
+
+\section*{5. Posterior-Sample Quality}
+Diagnostics used 30 trials, posterior samples per trial=200, rollout length=1000.
+For this section, each trial corresponds to one generated input context. Contexts were generated as:
+\begin{itemize}
+\item Sample latent transitions independently: $\theta_{00},\theta_{01},\theta_{10},\theta_{11}\sim\mathrm{Beta}(1,1)$.
+\item Sample one context of length 1000 from the Markov-2 process.
+\item Compute exact Bayes posterior marginals from context transition counts:
+\[
+\theta_s\mid x_{1:n}\sim\mathrm{Beta}(n_{s,1}+1, n_{s,0}+1),\quad s\in\{00,01,10,11\}.
+\]
+\item Estimate model-implied posterior by 200 rollouts of length 1000 per context; each rollout yields one
+$\hat\theta\in[0,1]^4$ from continuation transition frequencies.
+\end{itemize}
+
+\begin{table}[H]
+\centering
+\begin{tabular}{lrrrrrr}
+\toprule
+Metric & Mean & Median & p90 & p95 & Max & Perfect-match expected mean \\
+\midrule
+Wasserstein-1 & 0.0386 & 0.0326 & 0.0639 & 0.0718 & 0.1129 & 0.0028 \\
+KS(CDF) & 0.4128 & 0.3932 & 0.5563 & 0.5845 & 0.6509 & 0.0579 \\
+CvM-int & 0.0146 & 0.0112 & 0.0254 & 0.0369 & 0.0510 & 0.0001 \\
+PIT-KS & 0.4148 & 0.3967 & 0.5579 & 0.5870 & 0.6525 & 0.0605 \\
+PIT-CvM & 18.8527 & 17.1613 & 30.6424 & 33.0650 & 40.0807 & 0.1651 \\
+Quantile RMSE & 0.0412 & 0.0351 & 0.0657 & 0.0783 & 0.1178 & 0.0034 \\
+Coverage MAE & 0.2877 & 0.2750 & 0.4060 & 0.4496 & 0.4850 & 0.0199 \\
+\bottomrule
+\end{tabular}
+\caption{Summary of posterior-distribution similarity metrics across 30 Markov-2 contexts, with finite-sample perfect-match baselines.}
+\end{table}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.98\linewidth]{../artifacts/markov\_k2\_gaplt1\_report/figures/posterior\_context\_grid\_5x6\_k2.png}
+\caption{Posterior-shape diagnostics for 30 contexts (5x6 grid). Histograms are model-implied samples by state; curves are true Bayes posterior marginals.}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.88\linewidth]{../artifacts/markov\_k2\_gaplt1\_report/figures/posterior\_context\_metrics\_boxplot\_5x6\_k2.png}
+\caption{Boxplots of per-context posterior similarity metrics (30 values per metric, log scale).}
+\end{figure}
+
+For each metric, the reported context-level value is computed per state and then averaged, preserving the same metric family and table structure as the Bernoulli and k=1 reports while adapting to the 4-parameter posterior.
+
+\section*{6. LPE Estimation Quality and Naive MC Baseline}
+For this k=2 LPE rerun (Step 3 only; same checkpoint as Sections 1--5):
+\begin{itemize}
+\item Number of contexts: 8 (all length 1000).
+\item Target string length: 100.
+\item Target mode: \texttt{balanced} (de Bruijn-based construction).
+\item The same fixed target string is used for all 8 contexts in this run.
+\item Posterior samples per context: $M=200$; rollout length $L=1000$.
+\end{itemize}
+
+A binary de Bruijn cycle $B(2,n)$ is a cyclic bit string of length $2^n$ such that, with wrap-around, every length-$n$ binary substring appears exactly once. For k=2 we use order $n=k+1=3$, so the base cycle length is $2^3=8$.
+
+Target generation matches \texttt{make\_target\_bits}:
+\begin{enumerate}
+\item Build $B(2,3)$.
+\item Sample a random cyclic offset.
+\item Rotate, repeat, and truncate to length $m=100$.
+\end{enumerate}
+
+True event probability is computed by teacher forcing under the trained transformer:
+\[
+P_{\mathrm{TF}}(y_{1:m}\mid x_{1:n})
+=\prod_{t=1}^{m}P_{\mathrm{model}}\!\left(y_t\mid x_{1:n},y_{1:t-1}\right).
+\]
+Here $x_{1:n}$ is the observed context (length $n$) and $y_{1:m}$ is the fixed target (length $m$). We use this teacher-forced model probability as the ``true'' probability for LPE relative-error evaluation.
+
+The rollout-posterior estimator is
+\[
+\widehat P_{\text{post}}(y_{1:m}\mid x_{1:n})
+=\frac1M\sum_{j=1}^M f(\hat\theta^{(j)}),
+\]
+where
+\[
+f(\theta)\equiv P_{\theta}(y_{1:m}\mid x_{1:n})
+=\prod_{t=1}^{m}\theta_{s_t}^{\,y_t}\bigl(1-\theta_{s_t}\bigr)^{1-y_t}.
+\]
+
+Equal-compute naive MC uses
+\[
+R_{\mathrm{eq}}=\left\lfloor\frac{ML}{m}\right\rfloor
+=\left\lfloor\frac{200\times 1000}{100}\right\rfloor=2000,
+\]
+and
+\[
+\text{relative SE}_{\text{naive}}=\sqrt{\frac{1-P}{R_{\mathrm{eq}}P}},
+\qquad
+P(\text{zero hits})=(1-P)^{R_{\mathrm{eq}}}.
+\]
+
+\begin{table}[H]
+\centering
+\begin{tabular}{llll}
+\toprule
+Statistic & Posterior method $|\text{rel err}|$ & Naive MC expected rel SE & Naive MC $P(\text{zero hits})$ \\
+\midrule
+p50 & $2.72\times 10^{2}$ & $2.12\times 10^{18}$ & 1.000000 \\
+p90 & $8.39\times 10^{4}$ & $4.49\times 10^{25}$ & 1.000000 \\
+p95 & $1.56\times 10^{5}$ & $9.67\times 10^{25}$ & 1.000000 \\
+\bottomrule
+\end{tabular}
+\caption{k=2 posterior estimator error vs expected naive-MC error under matched token budget.}
+\end{table}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.72\linewidth]{../artifacts/markov\_k2\_gaplt1\_lpeonly\_ctx1000\_roll1000\_detailed/figures/posterior\_vs\_naive\_percentiles\_k2\_teacher\_forcing.png}
+\caption{Percentile-level comparison of posterior method error and naive-MC expected error (k=2, teacher-forced truth, log scale).}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.72\linewidth]{../artifacts/markov\_k2\_gaplt1\_lpeonly\_ctx1000\_roll1000\_detailed/figures/relative\_error\_vs\_true\_prob\_k2\_teacher\_forcing.png}
+\caption{Per-context relative error versus teacher-forced true event probability (k=2, log-log).}
+\end{figure}
+
+\begin{table}[H]
+\centering
+\scriptsize
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{rcccccc}
+\toprule
+Context & True prob (teacher-forced) & Predicted prob & True posterior mean & True posterior sd & Sampled posterior mean & Sampled posterior sd \\
+\midrule
+0 & 2.680e-44 & 5.955e-42 & (0.492,0.044,0.658,0.059) & (0.031,0.011,0.025,0.055) & (0.573,0.048,0.618,0.081) & (0.045,0.013,0.035,0.063) \\
+1 & 6.898e-37 & 1.641e-36 & (0.477,0.113,0.320,0.530) & (0.025,0.019,0.028,0.061) & (0.534,0.114,0.272,0.565) & (0.037,0.022,0.033,0.089) \\
+2 & 9.999e-35 & 4.118e-35 & (0.589,0.128,0.494,0.549) & (0.030,0.019,0.028,0.052) & (0.616,0.142,0.512,0.476) & (0.045,0.024,0.034,0.078) \\
+3 & 2.061e-36 & 6.468e-36 & (0.529,0.255,0.655,0.843) & (0.040,0.028,0.031,0.019) & (0.537,0.283,0.671,0.840) & (0.061,0.036,0.037,0.029) \\
+4 & 2.266e-52 & 5.168e-49 & (0.034,0.098,0.220,0.765) & (0.006,0.046,0.064,0.100) & (0.022,0.063,0.501,0.521) & (0.007,0.045,0.107,0.287) \\
+5 & 4.105e-36 & 5.237e-35 & (0.623,0.503,0.413,0.860) & (0.040,0.040,0.039,0.015) & (0.685,0.546,0.393,0.852) & (0.054,0.051,0.046,0.022) \\
+6 & 1.618e-47 & 6.972e-47 & (0.667,0.545,0.455,0.994) & (0.149,0.144,0.144,0.003) & (0.719,0.505,0.696,0.992) & (0.217,0.176,0.163,0.005) \\
+7 & 8.236e-34 & 2.087e-33 & (0.397,0.553,0.668,0.724) & (0.037,0.034,0.033,0.022) & (0.444,0.491,0.695,0.748) & (0.057,0.044,0.036,0.032) \\
+\bottomrule
+\end{tabular}
+\caption{Per-context posterior diagnostics for the Step-3 rerun. Entries are vectors over states $(00,01,10,11)$.}
+\end{table}
+
+With teacher-forced model probability as truth, the posterior method remains far better than equal-compute naive MC across percentiles, but absolute errors are still large for difficult contexts.
+
+\end{document}

@@ -1,0 +1,17 @@
+{
+  "k": 2,
+  "num_contexts": 8,
+  "context_len": 1000,
+  "rollout_len": 1000,
+  "num_posterior_samples": 200,
+  "target_len": 100,
+  "target_mode": "balanced",
+  "checkpoint_path": "checkpoints/markov_k2_overnight_20260220_034625/attempt_01_a01_l8d256_seed123_scout/k2/best.pt",
+  "metrics_csv": "artifacts/markov_k2_gaplt1_lpeonly_ctx1000_roll1000_detailed/k2/step3_lpe_metrics_detailed.csv",
+  "samples_csv": "artifacts/markov_k2_gaplt1_lpeonly_ctx1000_roll1000_detailed/k2/step3_posterior_samples.csv",
+  "samples_npy": "artifacts/markov_k2_gaplt1_lpeonly_ctx1000_roll1000_detailed/k2/step3_posterior_samples.npy",
+  "contexts_csv": "artifacts/markov_k2_gaplt1_lpeonly_ctx1000_roll1000_detailed/k2/step3_contexts.csv",
+  "target_json": "artifacts/markov_k2_gaplt1_lpeonly_ctx1000_roll1000_detailed/k2/step3_target_info.json",
+  "rel_err_median_pct": 408888439.194075,
+  "rel_err_mean_pct": 7.82384044544492e+24
+}

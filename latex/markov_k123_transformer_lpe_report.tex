@@ -223,14 +223,17 @@ y_t = c_{(t+r)\bmod |c|}, \quad t=1,\dots,m.
 \end{enumerate}
 For \(k=1\), this gives an exactly balanced target in this run: \(m=100\) is a multiple of \(|c|=4\), so the target has 50 zeros and 50 ones, and each 1-step state (\(0\) or \(1\)) is followed equally often by \(0\) and \(1\) over the target.
 
-True event probability is computed analytically under Bayes predictive using Beta-function ratios by state:
+True event probability is computed by teacher forcing under the trained transformer:
 \[
-P(y_{1:m}\mid x_{1:n}) = \prod_{s\in\{0,1\}}
-\frac{B(\alpha+n_{s,1}+m_{s,1},\;\beta+n_{s,0}+m_{s,0})}
-{B(\alpha+n_{s,1},\;\beta+n_{s,0})},
-\quad \alpha=\beta=1.
+P_{\mathrm{TF}}(y_{1:m}\mid x_{1:n})
+=\prod_{t=1}^{m}P_{\mathrm{model}}\!\left(y_t\mid x_{1:n},y_{1:t-1}\right).
 \]
-Here \(x_{1:n}\) is the observed context (length \(n\)), \(y_{1:m}\) is the fixed target string (length \(m\)), and \(s\) indexes the 1-step Markov state (\(s\in\{0,1\}\) for \(k=1\); in general \(s\in\{0,1\}^k\)). The counts \(n_{s,1}\) and \(n_{s,0}\) are the number of transitions in the context from state \(s\) to next bit \(1\) and \(0\), respectively. The counts \(m_{s,1}\) and \(m_{s,0}\) are the corresponding transition counts contributed by the target when it is appended after the context (including the bridge transition from the context into the target).
+Equivalently,
+\[
+\log P_{\mathrm{TF}}(y_{1:m}\mid x_{1:n})
+=\sum_{t=1}^{m}\log P_{\mathrm{model}}\!\left(y_t\mid x_{1:n},y_{1:t-1}\right).
+\]
+Here \(x_{1:n}\) is the observed context (length \(n\)) and \(y_{1:m}\) is the fixed target (length \(m\)). We use this teacher-forced model probability as the ``true'' probability for LPE relative-error evaluation in this section.
 
 The rollout-posterior estimator is
 \[
@@ -262,9 +265,9 @@ P(\text{zero hits})=(1-P)^{R_{\mathrm{eq}}}.
 \toprule
 Statistic & Posterior method $|\text{rel err}|$ & Naive MC expected rel SE & Naive MC $P(\text{zero hits})$ \\
 \midrule
-p50 & $1.00\times 10^{2}$ & $3.27\times 10^{10}$ & 1.000000 \\
-p90 & $2.13\times 10^{47}$ & $1.76\times 10^{45}$ & 1.000000 \\
-p95 & $4.62\times 10^{47}$ & $3.82\times 10^{45}$ & 1.000000 \\
+p50 & $3.20\times 10^{3}$ & $5.20\times 10^{22}$ & 1.000000 \\
+p90 & $8.72\times 10^{5}$ & $2.84\times 10^{33}$ & 1.000000 \\
+p95 & $1.84\times 10^{6}$ & $6.16\times 10^{33}$ & 1.000000 \\
 \bottomrule
 \end{tabular}
 \caption{k=1 posterior estimator error vs expected naive-MC error under matched token budget.}
@@ -272,13 +275,13 @@ p95 & $4.62\times 10^{47}$ & $3.82\times 10^{45}$ & 1.000000 \\
 
 \begin{figure}[H]
 \centering
-\includegraphics[width=0.72\linewidth]{../artifacts/markov\_k1\_gaplt1\_highcap\_lpeonly\_ctx1000\_roll1000\_detailed/figures/posterior\_vs\_naive\_percentiles\_k1\_ctx1000\_roll1000\_detailed.png}
+\includegraphics[width=0.72\linewidth]{../artifacts/markov\_k1\_gaplt1\_highcap\_lpeonly\_ctx1000\_roll1000\_detailed/figures/posterior\_vs\_naive\_percentiles\_k1\_teacher\_forcing.png}
 \caption{Percentile-level comparison of posterior method error and naive-MC expected error (k=1, log scale).}
 \end{figure}
 
 \begin{figure}[H]
 \centering
-\includegraphics[width=0.72\linewidth]{../artifacts/markov\_k1\_gaplt1\_highcap\_lpeonly\_ctx1000\_roll1000\_detailed/figures/relative\_error\_vs\_true\_prob\_k1\_ctx1000\_roll1000\_detailed.png}
+\includegraphics[width=0.72\linewidth]{../artifacts/markov\_k1\_gaplt1\_highcap\_lpeonly\_ctx1000\_roll1000\_detailed/figures/relative\_error\_vs\_true\_prob\_k1\_teacher\_forcing.png}
 \caption{Per-context relative error versus true event probability (k=1, log-log).}
 \end{figure}
 
@@ -288,22 +291,22 @@ p95 & $4.62\times 10^{47}$ & $3.82\times 10^{45}$ & 1.000000 \\
 \setlength{\tabcolsep}{4pt}
 \begin{tabular}{rcccccc}
 \toprule
-Context & True prob & Predicted prob & True posterior mean & True posterior sd & Sampled posterior mean & Sampled posterior sd \\
+Context & True prob (teacher-forced) & Predicted prob & True posterior mean & True posterior sd & Sampled posterior mean & Sampled posterior sd \\
 \midrule
-0 & 1.288e-25 & 1.166e-32 & (0.465,0.686) & (0.025,0.019) & (0.453,0.699) & (0.027,0.023) \\
-1 & 1.568e-64 & 1.558e-67 & (0.958,0.036) & (0.009,0.008) & (0.956,0.035) & (0.010,0.009) \\
-2 & 5.420e-23 & 6.729e-33 & (0.522,0.693) & (0.026,0.018) & (0.503,0.724) & (0.030,0.022) \\
-3 & 9.091e-18 & 1.362e-53 & (0.450,0.982) & (0.078,0.004) & (0.513,0.980) & (0.100,0.006) \\
-4 & 7.080e-12 & 3.757e-41 & (0.846,0.741) & (0.024,0.016) & (0.889,0.736) & (0.022,0.020) \\
-5 & 4.142e-14 & 1.553e-48 & (0.591,0.957) & (0.060,0.007) & (0.538,0.961) & (0.066,0.008) \\
-6 & 1.449e-95 & 1.030e-49 & (0.052,0.091) & (0.007,0.038) & (0.047,0.159) & (0.009,0.055) \\
-7 & 1.088e-52 & 5.626e-35 & (0.215,0.393) & (0.015,0.030) & (0.189,0.443) & (0.020,0.038) \\
+0 & 7.044e-33 & 1.166e-32 & (0.465,0.686) & (0.025,0.019) & (0.453,0.699) & (0.027,0.023) \\
+1 & 5.563e-72 & 1.558e-67 & (0.958,0.036) & (0.009,0.008) & (0.956,0.035) & (0.010,0.009) \\
+2 & 4.609e-33 & 6.729e-33 & (0.522,0.693) & (0.026,0.018) & (0.503,0.724) & (0.030,0.022) \\
+3 & 2.973e-56 & 1.362e-53 & (0.450,0.982) & (0.078,0.004) & (0.513,0.980) & (0.100,0.006) \\
+4 & 1.158e-42 & 3.757e-41 & (0.846,0.741) & (0.024,0.016) & (0.889,0.736) & (0.022,0.020) \\
+5 & 4.616e-50 & 1.553e-48 & (0.591,0.957) & (0.060,0.007) & (0.538,0.961) & (0.066,0.008) \\
+6 & 8.284e-52 & 1.030e-49 & (0.052,0.091) & (0.007,0.038) & (0.047,0.159) & (0.009,0.055) \\
+7 & 1.354e-35 & 5.626e-35 & (0.215,0.393) & (0.015,0.030) & (0.189,0.443) & (0.020,0.038) \\
 \bottomrule
 \end{tabular}
 \caption{Per-context posterior diagnostics for the Step-3 rerun. Posterior mean/sd entries are shown as \((\theta_0,\theta_1)\), where \(\theta_0=P(1\mid 0)\) and \(\theta_1=P(1\mid 1)\).}
 \end{table}
 
-In this rerun, the posterior method improves the median error substantially relative to equal-compute naive MC (p50: \(10^2\) vs \(3.27\times 10^{10}\)), but upper-tail errors remain very large and exceed the naive baseline at p90/p95. This indicates that the posterior-based estimator helps on easier contexts while still breaking down on the hardest rare-event contexts.
+With teacher-forced model probability as truth, the posterior method remains far better than equal-compute naive MC across percentiles (e.g., p50: \(3.20\times10^3\) vs \(5.20\times10^{22}\)), but its absolute errors are still large on difficult contexts.
 
 The table supports a concrete mechanism for the large LPE failures: on hard contexts, the model-implied posterior can be materially shifted from the true posterior. For example, context 6 has true posterior mean \((0.052,0.091)\) but sampled posterior mean \((0.047,0.159)\), i.e., a large upward shift in \(\theta_1\). Context 7 shows a similar \(\theta_1\) upward shift \((0.393 \rightarrow 0.443)\). These posterior mismatches are enough to strongly distort the estimated target probability, especially when the true event probability is already extremely small.
 

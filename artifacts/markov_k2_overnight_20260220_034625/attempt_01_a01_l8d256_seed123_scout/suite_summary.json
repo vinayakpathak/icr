@@ -1,0 +1,61 @@
+[
+  {
+    "k": 2,
+    "device": "cuda",
+    "model_config": {
+      "n_layers": 8,
+      "d_model": 256,
+      "n_heads": 8,
+      "d_mlp": 1024
+    },
+    "model_config_label": "L8_D256_H8_M1024",
+    "use_positional_encoding": true,
+    "target_mode": "random",
+    "quality_gate_required_gap_pct": 1.0,
+    "quality_gate_passed": true,
+    "rollout_length": 4000,
+    "train_seq_len": 4000,
+    "max_seq_len": 4096,
+    "num_posterior_samples": 200,
+    "batch_size": 8,
+    "checkpoint_path": "/root/icr/checkpoints/markov_k2_overnight_20260220_034625/attempt_01_a01_l8d256_seed123_scout/k2/best.pt",
+    "step1_eval_model_nll": 0.5055249675150721,
+    "step1_eval_bayes_nll": 0.5016139477094759,
+    "step1_gap_pct": 0.7796872123383323,
+    "step2_posterior_mae": NaN,
+    "step2_posterior_rmse": NaN,
+    "step3_lpe_rel_error_median_pct": NaN,
+    "step3_lpe_rel_error_mean_pct": NaN,
+    "prediction_plot": "/root/icr/artifacts/markov_k2_overnight_20260220_034625/attempt_01_a01_l8d256_seed123_scout/k2/figures/step1_model_vs_bayes.png",
+    "training_history_csv": "/root/icr/artifacts/markov_k2_overnight_20260220_034625/attempt_01_a01_l8d256_seed123_scout/k2/training_history.csv",
+    "training_curve_plot": "/root/icr/artifacts/markov_k2_overnight_20260220_034625/attempt_01_a01_l8d256_seed123_scout/k2/figures/step1_training_curve.png",
+    "posterior_plot": "",
+    "lpe_hist_plot": "",
+    "posterior_csv": "",
+    "lpe_csv": "",
+    "train_stats": {
+      "final_train_loss": 0.47595924757421015,
+      "last_eval_model_nll": 0.48602120165051027,
+      "last_eval_bayes_nll": 0.48246795626989303,
+      "best_gap_ratio": 0.007364728236230374,
+      "best_step": 2300,
+      "steps_run": 2300,
+      "early_stopped": true,
+      "history_csv": "/root/icr/artifacts/markov_k2_overnight_20260220_034625/attempt_01_a01_l8d256_seed123_scout/k2/training_history.csv"
+    },
+    "sweep": {
+      "chosen_config": {
+        "n_layers": 8,
+        "d_model": 256,
+        "n_heads": 8,
+        "d_mlp": 1024
+      },
+      "chosen_config_label": "L8_D256_H8_M1024",
+      "best_gap": NaN,
+      "results": [],
+      "sweep_log_path": "",
+      "override": true
+    },
+    "timestamp": 1771568775.8074832
+  }
+]
